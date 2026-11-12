@@ -3,6 +3,8 @@
   // Requests for static assets are free and unlimited on Cloudflare's free plan.
   "name": "ouroboros",
   "compatibility_date": "2026-11-01",
+  // Lets Workers Builds publish a preview for non-production branches (`wrangler preview`).
+  "previews": {},
   "assets": {
     "directory": "./public",
     "not_found_handling": "single-page-application"
