@@ -80,10 +80,10 @@ function paintDaylight() {
   dayTexDecl = G.sunLat;
   const S = 288, img = new ImageData(S, S), d = img.data;
   const sd = Math.sin(G.sunLat * D), cd = Math.cos(G.sunLat * D);
-  const edge = 2.5 / (S / 2);
+  const edge = 2.5 / (S / 2), PAD = 1.04;
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
-      const nx = (x + 0.5) / (S / 2) - 1, ny = (y + 0.5) / (S / 2) - 1;
+      const nx = ((x + 0.5) / (S / 2) - 1) * PAD, ny = ((y + 0.5) / (S / 2) - 1) * PAD;
       const r = Math.hypot(nx, ny);
       if (r < INNER - edge || r > 1 + edge) continue;
       const lat = (90 - ((r - INNER) / (1 - INNER)) * 180) * D;
@@ -93,7 +93,7 @@ function paintDaylight() {
       const dusk = Math.exp(-((cz / 0.09) ** 2));
       const feather = clamp((r - (INNER - edge)) / edge, 0, 1) * clamp((1 + edge - r) / edge, 0, 1);
       const i = (y * S + x) * 4;
-      d[i] = 10 + day * 12 + dusk * 58;
+      d[i] = 10 + day * 12 + dusk * 46;
       d[i + 1] = 12 + day * 44 + dusk * 16;
       d[i + 2] = 26 + day * 58 + dusk * 30;
       d[i + 3] = 255 * feather * (0.72 + day * 0.2);
@@ -199,7 +199,6 @@ function paintLife() {
   const now = Date.now();
   while (life.length && (now - life[0].t > LIFE_TTL || life.length > LIFE_MAX)) lifeIds.delete(life.shift().id);
   lifeLayer.x.clearRect(0, 0, geoSize, geoSize);
-  lifeLayer.x.globalCompositeOperation = 'lighter';
   for (const o of life) stampLife(o, now);
 }
 function addLife(o, quiet) {
@@ -343,15 +342,15 @@ function paintAurora() {
   x2.clearRect(0, 0, geoSize, geoSize);
   if (!auroraCells) return;
   const h = geoSize / 2, step = D * 1.08;
-  x2.lineWidth = Math.max(1.6 * geoScale, ((G.R - G.r0) / 180) * geoScale * 2.2);
+  x2.lineWidth = Math.max(1.3 * geoScale, ((G.R - G.r0) / 180) * geoScale * 2.2);
   x2.globalCompositeOperation = 'lighter';
   auroraPeak = 0;
   for (const cell of auroraCells) {
     const v = cell[2];
     if (v > auroraPeak) auroraPeak = v;
     if (v < 3) continue;
-    const a = 1 - Math.exp(-v / 14), hot = clamp((v - 35) / 50, 0, 1);
-    x2.strokeStyle = `rgba(${Math.round(90 + hot * 165)},${Math.round(255 - hot * 150)},${Math.round(165 + hot * 50)},${a * 0.6})`;
+    const a = clamp((v - 2) / 45, 0, 1) ** 0.9, hot = clamp((v - 35) / 50, 0, 1);
+    x2.strokeStyle = `rgba(${Math.round(90 + hot * 165)},${Math.round(255 - hot * 150)},${Math.round(165 + hot * 50)},${a})`;
     const r = radOf(cell[1]) * geoScale, a0 = -cell[0] * D;
     x2.beginPath();
     x2.arc(h, h, r, a0 - step, a0);
@@ -378,7 +377,7 @@ function hash01(s) {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0) / 4294967296;
 }
-const SEED_LIFE = 80;
+const SEED_LIFE = 120;
 function addSeed(p) {
   const h = hash01(p.wiki);
   seeds.push({
@@ -388,7 +387,7 @@ function addSeed(p) {
     bend: (hash01(p.wiki + '~') - 0.5) * 0.9,
     ph: Math.random() * TAU,
   });
-  if (seeds.length > 420) seeds.shift();
+  if (seeds.length > 600) seeds.shift();
   corePulse = 1;
   playPage(p.bot, p.len);
   offerWhisper(0, () => `${p.bot ? 'a machine wrote' : 'a new page'} — “${p.title.length > 64 ? p.title.slice(0, 62) + '…' : p.title}” — ${p.domain}`);
@@ -590,7 +589,7 @@ function frame(nowP) {
   ctx.fillRect(0, 0, G.w, G.h);
 
   drawDust(dt);
-  if (dayTex.width > 1) ctx.drawImage(dayTex, G.cx - G.R, G.cy - G.R, G.R * 2, G.R * 2);
+  if (dayTex.width > 1) ctx.drawImage(dayTex, G.cx - G.R * 1.04, G.cy - G.R * 1.04, G.R * 2.08, G.R * 2.08);
   ctx.globalCompositeOperation = 'lighter';
   drawWind(dt);
   ctx.globalCompositeOperation = 'source-over';
