@@ -1,0 +1,10 @@
+{
+  "name": "ouroboros",
+  "short_name": "ouroboros",
+  "description": "A living ring fed by the real world, right now.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "background_color": "#04050a",
+  "theme_color": "#04050a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

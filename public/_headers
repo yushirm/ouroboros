@@ -1,0 +1,5 @@
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://earthquake.usgs.gov https://api.inaturalist.org https://stream.wikimedia.org https://api.wheretheiss.at https://services.swpc.noaa.gov https://api.open-meteo.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Cache-Control: public, max-age=300
