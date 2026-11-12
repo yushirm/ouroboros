@@ -1,0 +1,10 @@
+{
+  // Static-assets-only Worker: no script, no bindings, nothing to maintain.
+  // Requests for static assets are free and unlimited on Cloudflare's free plan.
+  "name": "ouroboros",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "single-page-application"
+  }
+}
