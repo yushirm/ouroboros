@@ -83,6 +83,10 @@ About 12 MB per hour of watching, most of it the page-birth stream. All
 listening stops while the tab is hidden. (The full Wikipedia *edit* stream
 would have been livelier but runs ~180 MB/h — not something to do to a phone.)
 
+The screen is kept awake while the page is visible (Wake Lock, where the
+browser supports it). If a device can't hold a steady frame rate the canvas
+quietly drops its pixel density rather than stutter.
+
 ## Layout
 
 ```

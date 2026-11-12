@@ -32,7 +32,8 @@ function unproject(x, y) {
 }
 
 // Layers painted once in the Earth's own frame and then turned with the planet.
-const geoLayer = () => { const c = document.createElement('canvas'); return { c, x: c.getContext('2d') }; };
+// Each has its own resolution: the motes need to be crisp, the aurora is a soft glow.
+const geoLayer = () => { const c = document.createElement('canvas'); return { c, x: c.getContext('2d'), scale: 1, size: 0 }; };
 const lifeLayer = geoLayer(), auroraLayer = geoLayer();
 const dayTex = document.createElement('canvas');
 let geoSize = 0, geoScale = 1;
@@ -42,8 +43,8 @@ function geoXY(lon, lat) { // position inside a geo layer (lon 0 points right, u
   return [h + r * Math.cos(a), h + r * Math.sin(a)];
 }
 function drawGeo(layer, alpha, extraRot = 0, scale = 1) {
-  if (!geoSize) return;
-  const s = (geoSize / geoScale) * scale;
+  if (!layer.size) return;
+  const s = (layer.size / layer.scale) * scale;
   ctx.save();
   ctx.translate(G.cx, G.cy);
   ctx.rotate(-Math.PI / 2 + G.sunLon * D + extraRot);
@@ -52,8 +53,9 @@ function drawGeo(layer, alpha, extraRot = 0, scale = 1) {
   ctx.restore();
 }
 
+let maxDpr = 2; // lowered on its own if this device can't keep up
 function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
   const w = window.innerWidth, h = window.innerHeight;
   G.w = w; G.h = h; G.dpr = dpr;
   canvas.width = Math.round(w * dpr);
@@ -65,7 +67,9 @@ function resize() {
   G.cy = portrait ? h * 0.47 : h * 0.48;
   geoScale = dpr;
   geoSize = Math.ceil((G.R + 6) * 2 * dpr);
-  for (const l of [lifeLayer, auroraLayer]) { l.c.width = geoSize; l.c.height = geoSize; }
+  lifeLayer.scale = dpr;
+  auroraLayer.scale = 1;
+  for (const l of [lifeLayer, auroraLayer]) { l.size = Math.ceil((G.R + 6) * 2 * l.scale); l.c.width = l.c.height = l.size; }
   paintLife();
   paintAurora();
   seedWind();
@@ -146,8 +150,8 @@ function drawWind(dt) {
     if (p.lon > 180) p.lon -= 360; else if (p.lon < -180) p.lon += 360;
     const [x, y] = project(p.lon, p.lat);
     if (p.fresh) { p.tx = x; p.ty = y; p.fresh = false; }
-    p.tx += (x - p.tx) * Math.min(1, dt * 2.2);
-    p.ty += (y - p.ty) * Math.min(1, dt * 2.2);
+    p.tx += (x - p.tx) * Math.min(1, dt * 1.3);
+    p.ty += (y - p.ty) * Math.min(1, dt * 1.3);
     const sp = Math.hypot(u, v);
     const a = Math.sin((Math.PI * p.age) / p.life) * (0.25 + Math.min(1, sp / 13) * 0.75);
     const path = paths[Math.min(BUCKETS - 1, (a * BUCKETS) | 0)];
@@ -157,7 +161,7 @@ function drawWind(dt) {
   ctx.lineCap = 'round';
   ctx.lineWidth = 1;
   for (let b = 0; b < BUCKETS; b++) {
-    ctx.strokeStyle = `rgba(176,222,236,${0.07 + (b / (BUCKETS - 1)) * 0.36})`;
+    ctx.strokeStyle = `rgba(176,222,236,${0.09 + (b / (BUCKETS - 1)) * 0.45})`;
     ctx.stroke(paths[b]);
   }
 }
@@ -339,10 +343,11 @@ function drawDust(dt) {
 }
 function paintAurora() {
   const x2 = auroraLayer.x;
-  x2.clearRect(0, 0, geoSize, geoSize);
+  const sc = auroraLayer.scale;
+  x2.clearRect(0, 0, auroraLayer.size, auroraLayer.size);
   if (!auroraCells) return;
-  const h = geoSize / 2, step = D * 1.08;
-  x2.lineWidth = Math.max(1.3 * geoScale, ((G.R - G.r0) / 180) * geoScale * 2.2);
+  const h = auroraLayer.size / 2, step = D * 1.08;
+  x2.lineWidth = Math.max(1.5 * sc, ((G.R - G.r0) / 180) * sc * 2.2);
   x2.globalCompositeOperation = 'lighter';
   auroraPeak = 0;
   for (const cell of auroraCells) {
@@ -351,7 +356,7 @@ function paintAurora() {
     if (v < 3) continue;
     const a = clamp((v - 2) / 45, 0, 1) ** 0.9, hot = clamp((v - 35) / 50, 0, 1);
     x2.strokeStyle = `rgba(${Math.round(90 + hot * 165)},${Math.round(255 - hot * 150)},${Math.round(165 + hot * 50)},${a})`;
-    const r = radOf(cell[1]) * geoScale, a0 = -cell[0] * D;
+    const r = radOf(cell[1]) * sc, a0 = -cell[0] * D;
     x2.beginPath();
     x2.arc(h, h, r, a0 - step, a0);
     x2.stroke();
@@ -363,9 +368,8 @@ function drawAurora(t) {
   const rate = solar ? solar.speed / 450 : 1;
   const s1 = 0.5 + 0.5 * Math.sin(t * 0.9 * rate), s2 = 0.5 + 0.5 * Math.sin(t * 0.53 * rate + 2);
   ctx.globalCompositeOperation = 'lighter';
-  drawGeo(auroraLayer, 0.55 + 0.3 * s1);
-  drawGeo(auroraLayer, 0.16 + 0.2 * s2, 0.012 * Math.sin(t * 0.31), 1.012);
-  drawGeo(auroraLayer, 0.16 + 0.2 * (1 - s2), -0.012 * Math.sin(t * 0.27), 0.988);
+  drawGeo(auroraLayer, 0.6 + 0.3 * s1);
+  drawGeo(auroraLayer, 0.25 + 0.3 * s2, 0.014 * Math.sin(t * 0.31), 1 + 0.012 * Math.sin(t * 0.19));
   ctx.globalCompositeOperation = 'source-over';
 }
 
@@ -555,13 +559,20 @@ const sources = createSources({
 });
 
 // ───────────────────────────── the frame ─────────────────────────────
-let last = performance.now(), lastSlow = 0;
+let last = performance.now(), lastSlow = 0, slowSum = 0, slowN = 0;
 const meridian = -new Date().getTimezoneOffset() / 4; // your clock's meridian, not your location
 
 function frame(nowP) {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (nowP - last) / 1000);
+  const rawDt = nowP - last;
+  const dt = Math.min(0.05, rawDt / 1000);
   last = nowP;
+  // Self-care: if frames are slow for a sustained stretch, draw fewer pixels rather than stutter.
+  if (rawDt < 1000) { slowSum += rawDt; slowN++; }
+  if (slowN >= 120) {
+    if (slowSum / slowN > 36 && maxDpr > 1 && (window.devicePixelRatio || 1) > 1) { maxDpr = maxDpr > 1.5 ? 1.5 : 1; resize(); }
+    slowSum = slowN = 0;
+  }
   const now = Date.now(), t = nowP / 1000;
 
   if (nowP - lastSlow > 1000) {
@@ -586,7 +597,7 @@ function frame(nowP) {
   sg.addColorStop(0, 'rgba(255,214,150,0.16)');
   sg.addColorStop(1, 'rgba(255,214,150,0)');
   ctx.fillStyle = sg;
-  ctx.fillRect(0, 0, G.w, G.h);
+  ctx.fillRect(0, 0, G.w, Math.max(0, G.cy - G.R * 0.2));
 
   drawDust(dt);
   if (dayTex.width > 1) ctx.drawImage(dayTex, G.cx - G.R * 1.04, G.cy - G.R * 1.04, G.R * 2.08, G.R * 2.08);
@@ -657,6 +668,17 @@ paintDaylight();
 let resizeTimer = 0;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 120); });
 // Listen only while someone is looking: kind to batteries, data plans and the sources.
-document.addEventListener('visibilitychange', () => (document.hidden ? sources.stop() : sources.start()));
+// And keep the screen awake while it is being watched (released automatically when hidden).
+let wake = null;
+async function stayAwake() {
+  if (!('wakeLock' in navigator) || wake || document.hidden) return;
+  try { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } catch { /* denied or unsupported: fine */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { sources.stop(); slowSum = slowN = 0; }
+  else { sources.start(); last = performance.now(); stayAwake(); }
+});
+stayAwake();
+canvas.addEventListener('pointerdown', stayAwake);
 if (!document.hidden) sources.start();
 requestAnimationFrame(frame);
