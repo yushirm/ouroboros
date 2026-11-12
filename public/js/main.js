@@ -635,7 +635,8 @@ function updateAbout() {
     const k = li.dataset.src, live = isLive(k);
     li.classList.toggle('live', live);
     const st = status[k];
-    li.querySelector('em').textContent = live ? lines[k] || 'Listening…' : st && st.error ? 'Silent right now — will keep trying.' : 'Listening…';
+    li.querySelector('em').textContent = live ? lines[k] || 'Listening…' : st && st.error
+      ? (/429/.test(st.error) ? 'The source is rationing your network right now — will try again later.' : 'Silent right now — will keep trying.') : 'Listening…';
   }
 }
 const about = $('about');
