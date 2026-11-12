@@ -21,6 +21,7 @@ html, body {
 }
 
 canvas#c {
+  cursor: grab;
   position: fixed;
   inset: 0;
   width: 100%;
@@ -95,6 +96,18 @@ canvas#c {
 }
 #probe b { font-weight: 600; }
 #probe span { display: block; color: var(--dim); }
+
+#mark {
+  position: fixed;
+  left: -10px;
+  top: -10px;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(233, 228, 216, 0.75);
+  border-radius: 50%;
+  pointer-events: none;
+}
+#nogl { position: fixed; inset: auto 1.5rem 45%; margin: 0; text-align: center; font: 1rem var(--serif); color: var(--dim); }
 
 #controls {
   position: fixed;
