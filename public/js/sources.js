@@ -43,7 +43,8 @@ function poller(name, every, fn) {
       if (r && r.at) status[name].lastOk = r.at; // served from cache: keep its true age
     } catch (e) { fails++; mark(name, every, e); }
     if (my !== gen) return;
-    const wait = fails ? Math.min(every * 2 ** fails, 15 * MIN) : every;
+    // Back off on failure, but never retry a slow source faster than its own cadence.
+    const wait = fails ? Math.min(Math.max(every, MIN) * 2 ** fails, Math.max(every, 15 * MIN)) : every;
     timer = setTimeout(tick, wait, my);
   }
   return {
@@ -147,14 +148,27 @@ export function createSources(on) {
   for (let la = -80; la <= 80; la += 20) LATS.push(la);
   for (let lo = -180; lo < 180; lo += 22.5) LONS.push(lo);
   const WIND_EVERY = 120 * MIN, WIND_KEY = 'ouroboros.wind.v1';
-  all.push(poller('air', WIND_EVERY, async () => {
+  const cachedWind = (maxAge) => {
     try {
       const c = JSON.parse(localStorage.getItem(WIND_KEY) || 'null');
-      if (c && Date.now() - c.at < WIND_EVERY && c.u.length === LATS.length * LONS.length) {
-        on.wind({ lats: LATS, lons: LONS, u: c.u, v: c.v, at: c.at });
-        return { at: c.at };
-      }
-    } catch { /* storage unavailable: just fetch */ }
+      if (c && Date.now() - c.at < maxAge && c.u.length === LATS.length * LONS.length && c.v.length === c.u.length) return c;
+    } catch { /* storage unavailable */ }
+    return null;
+  };
+  all.push(poller('air', WIND_EVERY, async () => {
+    const c = cachedWind(WIND_EVERY);
+    if (c) { on.wind({ lats: LATS, lons: LONS, u: c.u, v: c.v, at: c.at }); return { at: c.at }; }
+    try { return await fetchWind(); }
+    catch (e) {
+      // The source refused (it meters by network). An older real reading, honestly
+      // dated in the panel, is better than still air — up to six hours old.
+      const old = cachedWind(3 * WIND_EVERY);
+      if (!old) throw e;
+      on.wind({ lats: LATS, lons: LONS, u: old.u, v: old.v, at: old.at });
+      return { at: old.at };
+    }
+  }));
+  async function fetchWind() {
     const la = [], lo = [];
     for (const a of LATS) for (const b of LONS) { la.push(a); lo.push(b); }
     const j = await getJSON('https://api.open-meteo.com/v1/forecast?latitude=' + la.join(',') + '&longitude=' + lo.join(',') +
@@ -173,7 +187,7 @@ export function createSources(on) {
     const at = Date.now();
     try { localStorage.setItem(WIND_KEY, JSON.stringify({ at, u, v })); } catch { /* fine */ }
     on.wind({ lats: LATS, lons: LONS, u, v, at });
-  }));
+  }
 
   // ── The written: every page newly created on any Wikimedia project, as a
   // server-sent event stream. (The full edit stream is ~50 kB/s — too greedy
