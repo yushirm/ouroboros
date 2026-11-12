@@ -1,6 +1,7 @@
 import { subsolar, solarHourWords } from './astro.js';
 import { createSources, status, isLive } from './sources.js';
 import { toggleSound, soundOn, playLife, playPage, playQuake } from './audio.js';
+import { RA, RB, K, NRIP, createPrograms, bindLayout, Batch, PTS_LAYOUT, perspective, lookAt, mul } from './gl.js';
 
 const D = Math.PI / 180, TAU = Math.PI * 2;
 const HOUR = 3_600_000;
@@ -8,104 +9,79 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const $ = (id) => document.getElementById(id);
 
 const canvas = $('c');
-const ctx = canvas.getContext('2d');
+const gl = canvas.getContext('webgl', { antialias: true, alpha: false, powerPreference: 'high-performance' });
+if (!gl) { $('nogl').hidden = false; throw new Error('WebGL unavailable'); }
+// If the GPU drops us (it happens on phones), start clean rather than limp.
+canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); setTimeout(() => location.reload(), 1500); });
 
-// ───────────────────────────── geometry ─────────────────────────────
-// The ring: angle is longitude (Sun at the top, east runs anticlockwise, as the
-// Earth turns when seen from above the north pole); radius is latitude (north
-// pole at the inner rim, south pole at the outer rim).
-const G = { w: 0, h: 0, dpr: 1, cx: 0, cy: 0, R: 1, r0: 1, sunLon: 0, sunLat: 0 };
-const INNER = 0.4;
+const prog = createPrograms(gl);
+const MAX_PT = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
+const T0 = Date.now();
+const secs = (ms) => (ms - T0) / 1000; // shader time: seconds since this page opened
 
-const angOf = (lon) => -Math.PI / 2 - (lon - G.sunLon) * D;
-const radOf = (lat) => G.r0 + ((90 - lat) / 180) * (G.R - G.r0);
-function project(lon, lat) {
-  const a = angOf(lon), r = radOf(lat);
-  return [G.cx + r * Math.cos(a), G.cy + r * Math.sin(a)];
+// ───────────────────────────── the world ─────────────────────────────
+// The creature is the Earth's skin wrapped around a ring. Around the ring runs
+// longitude, with the Sun's meridian always facing +X. Around the body runs
+// latitude: the equator is the outer rim, the north is the back, the south the
+// belly, and both poles meet in the throat.
+const G = { w: 1, h: 1, dpr: 1, sunLon: 0, sunLat: 0 };
+const cam = { az: 0.9, el: 0.62, dist: 5, auto: true, idleAt: 0, vp: new Float32Array(16), eye: [0, 0, 0], px: 1 };
+const FOVY = 44 * D;
+
+function surface(lon, lat, h = 0, sun = G.sunLon) {
+  const th = (lon - sun) * D, ph = lat * D * K, ct = Math.cos(th), st = Math.sin(th), cp = Math.cos(ph), sp = Math.sin(ph);
+  const n = [cp * ct, sp, -cp * st], r = RA + RB * cp;
+  return { p: [r * ct + n[0] * h, RB * sp + n[1] * h, -r * st + n[2] * h], n };
 }
-function unproject(x, y) {
-  const dx = x - G.cx, dy = y - G.cy, r = Math.hypot(dx, dy);
-  const lat = 90 - ((r - G.r0) / (G.R - G.r0)) * 180;
-  let lon = G.sunLon - (Math.atan2(dy, dx) + Math.PI / 2) / D;
-  lon = (((lon + 180) % 360) + 360) % 360 - 180;
-  return { lon, lat, r };
+function toScreen(p) {
+  const m = cam.vp, w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+  if (w <= 0.01) return null;
+  return [((m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]) / w * 0.5 + 0.5) * G.w, (0.5 - (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]) / w * 0.5) * G.h, w];
 }
+const facing = (s) => s.n[0] * (cam.eye[0] - s.p[0]) + s.n[1] * (cam.eye[1] - s.p[1]) + s.n[2] * (cam.eye[2] - s.p[2]) > 0;
 
-// Layers painted once in the Earth's own frame and then turned with the planet.
-const geoLayer = () => { const c = document.createElement('canvas'); return { c, x: c.getContext('2d') }; };
-const lifeLayer = geoLayer(), auroraLayer = geoLayer();
-const dayTex = document.createElement('canvas');
-let geoSize = 0, geoScale = 1;
-
-function geoXY(lon, lat) { // position inside a geo layer (lon 0 points right, unrotated)
-  const a = -lon * D, r = radOf(lat) * geoScale, h = geoSize / 2;
-  return [h + r * Math.cos(a), h + r * Math.sin(a)];
-}
-function drawGeo(layer, alpha, extraRot = 0, scale = 1) {
-  if (!geoSize) return;
-  const s = (geoSize / geoScale) * scale;
-  ctx.save();
-  ctx.translate(G.cx, G.cy);
-  ctx.rotate(-Math.PI / 2 + G.sunLon * D + extraRot);
-  ctx.globalAlpha = alpha;
-  ctx.drawImage(layer.c, -s / 2, -s / 2, s, s);
-  ctx.restore();
-}
-
+let maxDpr = 2; // lowered on its own if this device can't keep up
+function fitDist() { return Math.max(4.3, 1.46 / (Math.tan(FOVY / 2) * (G.w / G.h))); }
 function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = window.innerWidth, h = window.innerHeight;
-  G.w = w; G.h = h; G.dpr = dpr;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
-  const portrait = h > w * 1.15;
-  G.R = Math.max(60, Math.min(w * 0.47, h * (portrait ? 0.4 : 0.43)));
-  G.r0 = G.R * INNER;
-  G.cx = w / 2;
-  G.cy = portrait ? h * 0.47 : h * 0.48;
-  geoScale = dpr;
-  geoSize = Math.ceil((G.R + 6) * 2 * dpr);
-  for (const l of [lifeLayer, auroraLayer]) { l.c.width = geoSize; l.c.height = geoSize; }
-  paintLife();
-  paintAurora();
-  seedWind();
-  seedDust();
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+  const first = G.w === 1;
+  G.w = window.innerWidth; G.h = window.innerHeight; G.dpr = dpr;
+  canvas.width = Math.round(G.w * dpr);
+  canvas.height = Math.round(G.h * dpr);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  cam.px = canvas.height / (2 * Math.tan(FOVY / 2));
+  if (first || cam.auto) cam.dist = fitDist();
+}
+function updateCamera(dt, t) {
+  if (!cam.auto && performance.now() - cam.idleAt > 9000) cam.auto = true;
+  if (cam.auto) {
+    // A slow orbit of its own: the viewer drifting, not the data.
+    cam.az += dt * 0.03;
+    cam.el += (0.58 + 0.3 * Math.sin(t * 0.045) - cam.el) * Math.min(1, dt * 0.25);
+  }
+  const ce = Math.cos(cam.el);
+  cam.eye = [cam.dist * ce * Math.cos(cam.az), cam.dist * Math.sin(cam.el), cam.dist * ce * Math.sin(cam.az)];
+  cam.vp = mul(perspective(FOVY, G.w / G.h, 0.05, 80), lookAt(cam.eye, [0, 0, 0]));
 }
 
-// ───────────────────────────── day & night ─────────────────────────────
-// The body of the ring is lit by where the Sun really is, season included.
-let dayTexDecl = 99;
-function paintDaylight() {
-  if (Math.abs(G.sunLat - dayTexDecl) < 0.05) return;
-  dayTexDecl = G.sunLat;
-  const S = 288, img = new ImageData(S, S), d = img.data;
-  const sd = Math.sin(G.sunLat * D), cd = Math.cos(G.sunLat * D);
-  const edge = 2.5 / (S / 2), PAD = 1.04;
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) {
-      const nx = ((x + 0.5) / (S / 2) - 1) * PAD, ny = ((y + 0.5) / (S / 2) - 1) * PAD;
-      const r = Math.hypot(nx, ny);
-      if (r < INNER - edge || r > 1 + edge) continue;
-      const lat = (90 - ((r - INNER) / (1 - INNER)) * 180) * D;
-      const hourAngle = -(Math.atan2(ny, nx) + Math.PI / 2);
-      const cz = Math.sin(lat) * sd + Math.cos(lat) * cd * Math.cos(hourAngle); // cosine of the Sun's zenith angle
-      const day = clamp((cz + 0.1) / 0.5, 0, 1);
-      const dusk = Math.exp(-((cz / 0.09) ** 2));
-      const feather = clamp((r - (INNER - edge)) / edge, 0, 1) * clamp((1 + edge - r) / edge, 0, 1);
-      const i = (y * S + x) * 4;
-      d[i] = 10 + day * 12 + dusk * 46;
-      d[i + 1] = 12 + day * 44 + dusk * 16;
-      d[i + 2] = 26 + day * 58 + dusk * 30;
-      d[i + 3] = 255 * feather * (0.72 + day * 0.2);
-    }
+// ───────────────────────────── the body ─────────────────────────────
+const body = (() => {
+  const NU = 256, NV = 64, v = new Float32Array((NU + 1) * (NV + 1) * 2), idx = new Uint16Array(NU * NV * 6);
+  let k = 0;
+  for (let j = 0; j <= NV; j++) for (let i = 0; i <= NU; i++) { v[k++] = (i / NU) * TAU - Math.PI; v[k++] = (j / NV - 0.5) * Math.PI; }
+  k = 0;
+  for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
+    const a = j * (NU + 1) + i, b = a + 1, c = a + NU + 1, d = c + 1;
+    idx[k++] = a; idx[k++] = b; idx[k++] = c; idx[k++] = b; idx[k++] = d; idx[k++] = c;
   }
-  dayTex.width = dayTex.height = S;
-  dayTex.getContext('2d').putImageData(img, 0, 0);
-}
+  const vb = gl.createBuffer(), ib = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, v, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  return { vb, ib, n: idx.length };
+})();
 
 // ───────────────────────────── the air ─────────────────────────────
 let wind = null;
-const parts = [];
 function windAt(lon, lat) {
   const { lats, lons, u, v } = wind, nx = lons.length, ny = lats.length;
   const fx = (lon + 180) / (360 / nx), fy = clamp((lat - lats[0]) / (lats[1] - lats[0]), 0, ny - 1.001);
@@ -117,52 +93,43 @@ function windAt(lon, lat) {
     (v[a] * (1 - tx) + v[b] * tx) * (1 - ty) + (v[c] * (1 - tx) + v[e] * tx) * ty,
   ];
 }
+const TRAIL = 7, parts = [];
 function respawn(p) {
   p.lon = Math.random() * 360 - 180;
-  p.lat = Math.asin(Math.random() * 2 - 1) / D; // uniform over the sphere
-  p.age = 0;
-  p.life = 4 + Math.random() * 7;
-  p.fresh = true;
+  p.lat = Math.asin(Math.random() * 2 - 1) / D; // uniform over the real sphere
+  p.age = 0; p.life = 5 + Math.random() * 8; p.sp = 0;
+  for (let i = 0; i < TRAIL; i++) { p.hl[i] = p.lon; p.ha[i] = p.lat; }
 }
-function seedWind() {
-  const n = Math.round(clamp(700 + G.R * 5, 900, 3200));
-  parts.length = 0;
-  for (let i = 0; i < n; i++) { const p = { tx: 0, ty: 0 }; respawn(p); p.age = Math.random() * p.life; parts.push(p); }
-}
-const BUCKETS = 4;
-function drawWind(dt) {
+for (let i = 0; i < 2600; i++) { const p = { hl: new Float32Array(TRAIL), ha: new Float32Array(TRAIL) }; respawn(p); p.age = Math.random() * p.life; parts.push(p); }
+let trailClock = 0;
+function stepWind(dt, batch, lines) {
   if (!wind || !isLive('air')) return;
-  const kpx = G.R * 0.0052; // px per second per m/s — the one deliberate exaggeration
-  const span = G.R - G.r0;
-  const paths = [];
-  for (let b = 0; b < BUCKETS; b++) paths.push(new Path2D());
+  const kw = 0.0085; // world units per second per m/s — the one deliberate exaggeration
+  trailClock += dt;
+  const shift = trailClock > 0.16;
+  if (shift) trailClock = 0;
   for (const p of parts) {
     p.age += dt;
-    if (p.age > p.life || Math.abs(p.lat) > 87) respawn(p);
+    if (p.age > p.life || Math.abs(p.lat) > 86) respawn(p);
     const [u, v] = windAt(p.lon, p.lat);
-    const r = radOf(p.lat);
-    p.lat += ((v * kpx * dt) / span) * 180;
-    p.lon += ((u * kpx * dt) / r) / D;
+    p.sp = Math.hypot(u, v);
+    p.lat += (v * kw * dt) / (RB * K) / D;
+    p.lon += (u * kw * dt) / (RA + RB * Math.cos(p.lat * D * K)) / D;
     if (p.lon > 180) p.lon -= 360; else if (p.lon < -180) p.lon += 360;
-    const [x, y] = project(p.lon, p.lat);
-    if (p.fresh) { p.tx = x; p.ty = y; p.fresh = false; }
-    p.tx += (x - p.tx) * Math.min(1, dt * 2.2);
-    p.ty += (y - p.ty) * Math.min(1, dt * 2.2);
-    const sp = Math.hypot(u, v);
-    const a = Math.sin((Math.PI * p.age) / p.life) * (0.25 + Math.min(1, sp / 13) * 0.75);
-    const path = paths[Math.min(BUCKETS - 1, (a * BUCKETS) | 0)];
-    path.moveTo(p.tx, p.ty);
-    path.lineTo(x, y);
-  }
-  ctx.lineCap = 'round';
-  ctx.lineWidth = 1;
-  for (let b = 0; b < BUCKETS; b++) {
-    ctx.strokeStyle = `rgba(176,222,236,${0.07 + (b / (BUCKETS - 1)) * 0.36})`;
-    ctx.stroke(paths[b]);
+    if (shift) { p.hl.copyWithin(1, 0); p.ha.copyWithin(1, 0); }
+    p.hl[0] = p.lon; p.ha[0] = p.lat;
+    const env = Math.sin((Math.PI * p.age) / p.life) * (0.2 + Math.min(1, p.sp / 13) * 0.8);
+    batch.push(p.lon * D, p.lat * D, 0.012, 0.62, 0.86, 0.95, env * 0.55, 0.014, 0);
+    for (let i = 1; i < TRAIL; i++) {
+      if (Math.abs(p.hl[i] - p.lon) > 90) break; // crossed the date line: drop the stale end
+      const k0 = 1 - (i - 1) / TRAIL, k1 = 1 - i / TRAIL;
+      lines.push(p.hl[i - 1] * D, p.ha[i - 1] * D, 0.012, 0.62, 0.86, 0.95, env * k0 * 0.6, 1, 0);
+      lines.push(p.hl[i] * D, p.ha[i] * D, 0.012, 0.62, 0.86, 0.95, env * k1 * 0.6, 1, 0);
+    }
   }
 }
 
-// ───────────────────────────── the living ─────────────────────────────
+// ───────────────────────────── the living: fur ─────────────────────────────
 const KINDS = {
   Plantae: [111, 220, 122], Aves: [111, 195, 255], Insecta: [255, 200, 87], Fungi: [229, 139, 255],
   Mammalia: [255, 143, 107], Reptilia: [181, 200, 74], Amphibia: [63, 224, 197], Mollusca: [242, 215, 192],
@@ -175,42 +142,58 @@ const KIND_WORDS = {
   Amphibia: 'an amphibian', Mollusca: 'a mollusc', Arachnida: 'an arachnid', Actinopterygii: 'a fish', Animalia: 'an animal',
   Chromista: 'a chromist', Protozoa: 'a protozoan', unknown: 'something alive',
 };
-const rgb = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 const kindColor = (k) => KINDS[k] || KINDS.unknown;
 
-const life = [];        // on the ring
-const lifePending = []; // waiting for their moment (replayed with their true spacing)
-const blooms = [];      // arrivals still unfurling
-const LIFE_MAX = 6000, LIFE_TTL = 6 * HOUR;
-const lifeIds = new Set();
+const LIFE_MAX = 12000, FUR_STRIDE = 11, FUR_VERTS = 6;
+const FUR_LAYOUT = [['aLL', 2], ['aT', 1], ['aLB', 2], ['aCol', 3], ['aW', 2], ['aPh', 1]];
+const furData = new Float32Array(LIFE_MAX * FUR_VERTS * FUR_STRIDE), tipData = new Float32Array(LIFE_MAX * FUR_STRIDE);
+const furBuf = gl.createBuffer(), tipBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, furBuf); gl.bufferData(gl.ARRAY_BUFFER, furData, gl.DYNAMIC_DRAW);
+gl.bindBuffer(gl.ARRAY_BUFFER, tipBuf); gl.bufferData(gl.ARRAY_BUFFER, tipData, gl.DYNAMIC_DRAW);
+const life = new Array(LIFE_MAX).fill(null); // a ring: the newest sighting overwrites the oldest
+const lifeIds = new Set(), lifePending = [], blooms = [];
+let lifeHead = 0, lifeCount = 0, furDirty = false;
+const HAIR_T = [0, 1 / 3, 1 / 3, 2 / 3, 2 / 3, 1];
 
-function lifeAlpha(o, now) {
-  const age = now - o.t;
-  return age < 0.5 * HOUR ? 0.85 : clamp(0.85 - ((age - 0.5 * HOUR) / (3 * HOUR)) * 0.6, 0.25, 0.85);
+function writeHair(slot) {
+  const o = life[slot], c = kindColor(o.kind);
+  const w = wind && isLive('air') ? windAt(o.lon, o.lat) : [0, 0];
+  const put = (arr, off, t) => {
+    arr[off] = o.lon * D; arr[off + 1] = o.lat * D; arr[off + 2] = t; arr[off + 3] = o.len; arr[off + 4] = o.shown;
+    arr[off + 5] = c[0] / 255; arr[off + 6] = c[1] / 255; arr[off + 7] = c[2] / 255; arr[off + 8] = w[0]; arr[off + 9] = w[1]; arr[off + 10] = o.ph;
+  };
+  for (let i = 0; i < FUR_VERTS; i++) put(furData, (slot * FUR_VERTS + i) * FUR_STRIDE, HAIR_T[i]);
+  put(tipData, slot * FUR_STRIDE, 1);
 }
-function stampLife(o, now) {
-  const [x, y] = geoXY(o.lon, o.lat), x2 = lifeLayer.x;
-  x2.fillStyle = rgb(kindColor(o.kind), lifeAlpha(o, now));
-  x2.beginPath();
-  x2.arc(x, y, 1.05 * geoScale, 0, TAU);
-  x2.fill();
+function uploadHair(slot) {
+  const a = slot * FUR_VERTS * FUR_STRIDE, b = slot * FUR_STRIDE;
+  gl.bindBuffer(gl.ARRAY_BUFFER, furBuf); gl.bufferSubData(gl.ARRAY_BUFFER, a * 4, furData.subarray(a, a + FUR_VERTS * FUR_STRIDE));
+  gl.bindBuffer(gl.ARRAY_BUFFER, tipBuf); gl.bufferSubData(gl.ARRAY_BUFFER, b * 4, tipData.subarray(b, b + FUR_STRIDE));
 }
-function paintLife() {
-  const now = Date.now();
-  while (life.length && (now - life[0].t > LIFE_TTL || life.length > LIFE_MAX)) lifeIds.delete(life.shift().id);
-  lifeLayer.x.clearRect(0, 0, geoSize, geoSize);
-  for (const o of life) stampLife(o, now);
+function refreshFur() { // e.g. when a new wind reading arrives
+  for (let s = 0; s < LIFE_MAX; s++) if (life[s]) writeHair(s);
+  gl.bindBuffer(gl.ARRAY_BUFFER, furBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, furData);
+  gl.bindBuffer(gl.ARRAY_BUFFER, tipBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, tipData);
+  furDirty = false;
 }
 function addLife(o, quiet) {
   if (lifeIds.has(o.id)) return;
+  const slot = lifeHead;
+  if (life[slot]) lifeIds.delete(life[slot].id);
+  lifeHead = (lifeHead + 1) % LIFE_MAX;
+  lifeCount = Math.min(LIFE_MAX, lifeCount + 1);
   lifeIds.add(o.id);
-  life.push(o);
-  stampLife(o, Date.now());
-  if (quiet) return;
+  o.len = 0.03 + Math.random() * 0.055;
+  o.ph = Math.random() * TAU;
+  o.shown = quiet ? secs(o.t) : secs(Date.now());
+  life[slot] = o;
+  writeHair(slot);
+  if (quiet) { furDirty = true; return; }
+  uploadHair(slot);
   blooms.push({ o, born: performance.now() });
-  if (blooms.length > 400) blooms.shift();
-  const [x] = project(o.lon, o.lat);
-  playLife(Math.max(0, KIND_NAMES.indexOf(o.kind)), (x - G.cx) / G.R);
+  if (blooms.length > 300) blooms.shift();
+  const s = toScreen(surface(o.lon, o.lat).p);
+  playLife(Math.max(0, KIND_NAMES.indexOf(o.kind)), s ? clamp((s[0] / G.w) * 2 - 1, -1, 1) : 0);
   offerWhisper(1, () => `${o.name || KIND_WORDS[o.kind] || 'something alive'} — noticed${o.place ? ' in ' + o.place : ''}`);
 }
 function releaseLife() {
@@ -218,66 +201,52 @@ function releaseLife() {
   let n = 0;
   while (lifePending.length && lifePending[0].due <= now && n++ < 12) addLife(lifePending.shift().o, false);
 }
-function drawBlooms(nowP) {
-  for (let i = blooms.length - 1; i >= 0; i--) {
-    const b = blooms[i], age = (nowP - b.born) / 1000;
-    if (age > 5) { blooms.splice(i, 1); continue; }
-    const [x, y] = project(b.o.lon, b.o.lat), c = kindColor(b.o.kind), k = age / 5;
-    ctx.strokeStyle = rgb(c, (1 - k) * 0.7);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(x, y, 1.5 + (1 - (1 - k) ** 3) * G.R * 0.045, 0, TAU);
-    ctx.stroke();
-    ctx.fillStyle = rgb(c, (1 - k) * 0.9);
-    ctx.beginPath();
-    ctx.arc(x, y, 1.2 + (1 - k) * 1.8, 0, TAU);
-    ctx.fill();
-  }
-}
 
 // ───────────────────────────── the ground ─────────────────────────────
 const quakes = new Map();
 function depthColor(km) {
-  const sh = [255, 176, 66], mid = [255, 88, 118], deep = [168, 112, 255];
-  const mix = (a, b, t) => [0, 1, 2].map((i) => Math.round(a[i] + (b[i] - a[i]) * t));
+  const sh = [1, 0.69, 0.26], mid = [1, 0.35, 0.46], deep = [0.66, 0.44, 1];
+  const mix = (a, b, t) => [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * t);
   return km < 70 ? mix(sh, mid, clamp(km / 70, 0, 1)) : mix(mid, deep, clamp((km - 70) / 330, 0, 1));
 }
-const quakeSize = (mag) => (1 + Math.max(0, mag) ** 1.7 * 0.5) * (G.R / 300 + 0.35);
-function drawQuakes(now, nowP) {
+const ripPos = new Float32Array(NRIP * 4), ripAmp = new Float32Array(NRIP);
+function stepQuakes(now, nowP, batch) {
+  const rips = [];
   for (const [id, q] of quakes) {
     const ageH = (now - q.t) / HOUR;
     if (ageH > 24) { quakes.delete(id); continue; }
-    const [x, y] = project(q.lon, q.lat), c = q.color, s = quakeSize(q.mag);
-    const a = 0.1 + 0.8 * (1 - ageH / 24) ** 2;
-    ctx.fillStyle = rgb(c, a * 0.16);
-    ctx.beginPath(); ctx.arc(x, y, s * 2.6, 0, TAU); ctx.fill();
-    ctx.fillStyle = rgb(c, a);
-    ctx.beginPath(); ctx.arc(x, y, s * 0.8, 0, TAU); ctx.fill();
-    if (ageH < 0.5) { // the last half hour still trembles
-      const ph = ((now - q.t) / 3800) % 1;
-      ctx.strokeStyle = rgb(c, (1 - ph) * 0.5 * (1 - ageH * 2));
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(x, y, s * (1 + ph * 4.5), 0, TAU); ctx.stroke();
+    const c = q.color, m = Math.max(0, q.mag), size = 0.014 + m ** 1.7 * 0.0055, lon = q.lon * D, lat = q.lat * D;
+    const a = 0.12 + 0.85 * (1 - ageH / 24) ** 2;
+    batch.push(lon, lat, 0.006, c[0], c[1], c[2], a * 0.35, size * 4.5, 0);
+    batch.push(lon, lat, 0.008, c[0], c[1], c[2], a, size * 1.4, 0);
+    if (ageH < 0.5) { // the last half hour still trembles: a ripple through the skin every five seconds
+      const ph = ((now - q.t) / 5000) % 1, k = 1 - ageH * 2;
+      batch.push(lon, lat, 0.01, c[0], c[1], c[2], (1 - ph) * 0.6 * k, size * (2 + ph * 9), 1);
+      rips.push({ q, amp: Math.min(0.012, 0.002 * 2 ** (m / 2)) * k, at: secs(now) - ph * 5 });
     }
     if (q.shock) { // it reached us just now
-      const k = (nowP - q.shock) / (4000 + q.mag * 900);
-      if (k >= 1) q.shock = 0;
+      const age = (nowP - q.shock) / 1000, dur = 9 + m;
+      if (age > dur) q.shock = 0;
       else {
-        const reach = G.R * 0.035 * 2 ** (Math.max(0.5, q.mag) / 1.6);
+        rips.push({ q, amp: Math.min(0.14, 0.012 * 2 ** (m / 1.6)), at: secs(now) - age });
         for (let ring = 0; ring < 3; ring++) {
-          const kk = k - ring * 0.12;
-          if (kk <= 0) continue;
-          ctx.strokeStyle = rgb(c, (1 - kk) ** 2 * 0.9);
-          ctx.lineWidth = 1.4;
-          ctx.beginPath(); ctx.arc(x, y, s + (1 - (1 - kk) ** 3) * reach, 0, TAU); ctx.stroke();
+          const kk = age / 5 - ring * 0.15;
+          if (kk > 0 && kk < 1) batch.push(lon, lat, 0.012, c[0], c[1], c[2], (1 - kk) ** 2, size * 2 + (1 - (1 - kk) ** 3) * 0.05 * 2 ** (m / 1.6), 1);
         }
       }
     }
   }
+  rips.sort((a, b) => b.amp - a.amp);
+  ripAmp.fill(0);
+  for (let i = 0; i < Math.min(NRIP, rips.length); i++) {
+    const r = rips[i], s = surface(r.q.lon, r.q.lat, 0, 0).p; // Earth frame, before it is turned to the Sun
+    ripPos[i * 4] = s[0]; ripPos[i * 4 + 1] = s[1]; ripPos[i * 4 + 2] = s[2]; ripPos[i * 4 + 3] = r.at;
+    ripAmp[i] = r.amp;
+  }
 }
 
 // ───────────────────────────── people in orbit ─────────────────────────────
-const iss = []; // recent true fixes
+const iss = [];
 function issNow(now) {
   const n = iss.length;
   if (!n) return null;
@@ -285,153 +254,92 @@ function issNow(now) {
   if (n < 2) return b;
   const a = iss[n - 2], span = b.t - a.t;
   if (span <= 0) return b;
-  // Between fixes, coast along the measured velocity (never more than 30 s ahead).
-  const k = clamp((now - b.t) / span, 0, 30_000 / span);
+  const k = clamp((now - b.t) / span, 0, 30_000 / span); // coast on the measured velocity, never more than 30 s
   let dl = b.lon - a.lon;
   if (dl > 180) dl -= 360; else if (dl < -180) dl += 360;
   return { ...b, lon: b.lon + dl * k, lat: clamp(b.lat + (b.lat - a.lat) * k, -90, 90) };
 }
-function drawISS(now) {
-  if (!isLive('orbit')) return;
-  const p = issNow(now);
-  if (!p) return;
-  ctx.lineWidth = 1.2;
-  for (let i = 1; i < iss.length; i++) {
-    const [x0, y0] = project(iss[i - 1].lon, iss[i - 1].lat), [x1, y1] = project(iss[i].lon, iss[i].lat);
-    ctx.strokeStyle = `rgba(210,240,255,${(i / iss.length) * 0.5})`;
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-  }
-  const [x, y] = project(p.lon, p.lat);
-  const g = ctx.createRadialGradient(x, y, 0, x, y, 11);
-  g.addColorStop(0, 'rgba(210,240,255,0.55)');
-  g.addColorStop(1, 'rgba(210,240,255,0)');
-  ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(x, y, 11, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(x, y, 2.1, 0, TAU); ctx.fill();
-}
+const ISS_H = 0.07;
 
 // ───────────────────────────── the Sun ─────────────────────────────
-let solar = null, auroraCells = null, auroraPeak = 0;
-const dust = [];
-function seedDust() {
-  dust.length = 0;
-  const n = Math.round(clamp((G.w * G.h) / 9000, 40, 130));
-  for (let i = 0; i < n; i++) dust.push({ x: Math.random() * G.w, y: Math.random() * G.h, z: 0.4 + Math.random() * 0.6 });
-}
-function drawDust(dt) {
-  if (!solar || !isLive('sun')) return;
-  // True to scale: the ring is one Earth across (12,742 km), so 450 km/s crosses it in ~28 s.
-  const vy = (solar.speed / 12742) * 2 * G.R;
-  const keep = (G.R * 1.05) ** 2;
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = 'rgba(255,226,170,0.34)';
-  ctx.beginPath();
-  for (const p of dust) {
-    p.y += vy * dt;
-    if (p.y > G.h + 10) { p.y = -10; p.x = Math.random() * G.w; }
-    const dx = p.x - G.cx, dy = p.y - G.cy;
-    if (dx * dx + dy * dy < keep) continue; // the planet's shelter
-    ctx.moveTo(p.x, p.y);
-    ctx.lineTo(p.x, p.y - Math.max(2, vy * 0.35 * p.z));
-  }
-  ctx.stroke();
-}
-function paintAurora() {
-  const x2 = auroraLayer.x;
-  x2.clearRect(0, 0, geoSize, geoSize);
-  if (!auroraCells) return;
-  const h = geoSize / 2, step = D * 1.08;
-  x2.lineWidth = Math.max(1.3 * geoScale, ((G.R - G.r0) / 180) * geoScale * 2.2);
-  x2.globalCompositeOperation = 'lighter';
+let solar = null, auroraPeak = 0, auroraN = 0, auroraLive = false;
+const auroraBatch = new Batch(gl, 4096);
+function paintAurora(cells) {
+  auroraBatch.reset();
   auroraPeak = 0;
-  for (const cell of auroraCells) {
+  for (const cell of cells) {
     const v = cell[2];
     if (v > auroraPeak) auroraPeak = v;
     if (v < 3) continue;
     const a = clamp((v - 2) / 45, 0, 1) ** 0.9, hot = clamp((v - 35) / 50, 0, 1);
-    x2.strokeStyle = `rgba(${Math.round(90 + hot * 165)},${Math.round(255 - hot * 150)},${Math.round(165 + hot * 50)},${a})`;
-    const r = radOf(cell[1]) * geoScale, a0 = -cell[0] * D;
-    x2.beginPath();
-    x2.arc(h, h, r, a0 - step, a0);
-    x2.stroke();
+    const lon = cell[0] > 180 ? cell[0] - 360 : cell[0];
+    auroraBatch.push(lon * D, cell[1] * D, 0.02 + a * 0.03, 0.35 + hot * 0.65, 1 - hot * 0.6, 0.65 + hot * 0.2, a * 0.7, 0.045, 0);
+  }
+  auroraBatch.cap = 0; // force a full upload
+  auroraBatch.upload();
+  auroraN = auroraBatch.n;
+  auroraLive = true;
+}
+// Solar wind: dust crossing the whole space from the Sun's side, at its measured speed
+// to the scale of the body (one Earth across).
+const DUST = 420, BOX = 7, dust = [];
+for (let i = 0; i < DUST; i++) dust.push([Math.random() * 2 * BOX, (Math.random() * 2 - 1) * BOX, (Math.random() * 2 - 1) * BOX]);
+let dustShift = 0;
+function stepDust(dt, lines) {
+  if (!solar || !isLive('sun')) return;
+  const v = (solar.speed / 12742) * 2 * (RA + RB);
+  dustShift = (dustShift + v * dt) % (2 * BOX);
+  const cd = Math.cos(G.sunLat * D), sd = Math.sin(G.sunLat * D), len = v * 1.6;
+  for (const p of dust) {
+    const s = ((p[0] - dustShift + 4 * BOX) % (2 * BOX)) - BOX; // along the Sun line
+    // Sun direction S = (cd, sd, 0); perpendiculars (-sd, cd, 0) and (0, 0, 1)
+    const x = cd * s - sd * p[1], y = sd * s + cd * p[1], z = p[2];
+    lines.push(x, y, z, 1, 0.89, 0.67, 0.4);
+    lines.push(x + cd * len, y + sd * len, z, 1, 0.89, 0.67, 0);
   }
 }
-function drawAurora(t) {
-  if (!auroraCells || !isLive('aurora')) return;
-  // The curtains ripple faster when the solar wind blows harder.
-  const rate = solar ? solar.speed / 450 : 1;
-  const s1 = 0.5 + 0.5 * Math.sin(t * 0.9 * rate), s2 = 0.5 + 0.5 * Math.sin(t * 0.53 * rate + 2);
-  ctx.globalCompositeOperation = 'lighter';
-  drawGeo(auroraLayer, 0.55 + 0.3 * s1);
-  drawGeo(auroraLayer, 0.16 + 0.2 * s2, 0.012 * Math.sin(t * 0.31), 1.012);
-  drawGeo(auroraLayer, 0.16 + 0.2 * (1 - s2), -0.012 * Math.sin(t * 0.27), 0.988);
-  ctx.globalCompositeOperation = 'source-over';
-}
 
-// ───────────────────────────── the written ─────────────────────────────
-const seeds = [];
-let corePulse = 0;
+// ───────────────────────────── the written: breath ─────────────────────────────
+const spores = [];
+let heartPulse = 0;
 function hash01(s) {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0) / 4294967296;
 }
-const SEED_LIFE = 120;
-function addSeed(p) {
-  const h = hash01(p.wiki);
-  seeds.push({
-    ...p, born: performance.now(),
-    ang: h * TAU + (Math.random() - 0.5) * 0.3,
-    reach: 0.2 + 0.68 * clamp(Math.log10(p.len + 10) / 4.6, 0.05, 1) + (Math.random() - 0.5) * 0.06,
-    bend: (hash01(p.wiki + '~') - 0.5) * 0.9,
-    ph: Math.random() * TAU,
-  });
-  if (seeds.length > 600) seeds.shift();
-  corePulse = 1;
+const SPORE_LIFE = 150;
+function addSpore(p) {
+  // Each wiki breathes out in its own fixed direction, up or down through the throat.
+  const az = hash01(p.wiki) * TAU + (Math.random() - 0.5) * 0.35;
+  const el = (30 + hash01(p.wiki + '~') * 52) * D * (hash01(p.wiki + '^') < 0.5 ? -1 : 1) + (Math.random() - 0.5) * 0.12;
+  const big = clamp(Math.log10(p.len + 10) / 4.6, 0.05, 1);
+  spores.push({ ...p, born: performance.now(), big, dir: [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)], reach: 0.9 + 1.9 * big + Math.random() * 0.2, ph: Math.random() * TAU });
+  if (spores.length > 700) spores.shift();
+  heartPulse = 1;
   playPage(p.bot, p.len);
   offerWhisper(0, () => `${p.bot ? 'a machine wrote' : 'a new page'} — “${p.title.length > 64 ? p.title.slice(0, 62) + '…' : p.title}” — ${p.domain}`);
 }
-function seedTip(s, nowP) {
-  const age = (nowP - s.born) / 1000;
-  const grow = 1 - (1 - clamp(age / 3.5, 0, 1)) ** 3;
-  const a = s.ang + Math.sin(nowP / 2600 + s.ph) * 0.014;
-  const r = G.r0 * 0.86 * s.reach * grow;
-  return { x: G.cx + r * Math.cos(a), y: G.cy + r * Math.sin(a), a, r, age };
+function sporePos(s, nowP) {
+  const age = (nowP - s.born) / 1000, r = 0.06 + s.reach * (1 - Math.exp(-age / 38));
+  const wob = 0.035 * Math.sin(age * 0.5 + s.ph);
+  return [s.dir[0] * r + wob * s.dir[2], s.dir[1] * r, s.dir[2] * r - wob * s.dir[0], age];
 }
-function drawSeeds(nowP, dt) {
-  const live = isLive('written');
-  for (let i = seeds.length - 1; i >= 0; i--) {
-    const s = seeds[i], tip = seedTip(s, nowP);
-    if (tip.age > SEED_LIFE) { seeds.splice(i, 1); continue; }
-    const fade = clamp(tip.age / 0.6, 0, 1) * clamp((SEED_LIFE - tip.age) / 30, 0, 1);
-    const col = s.bot ? [150, 200, 255] : [255, 214, 150];
-    // stalk
-    const mx = G.cx + tip.r * 0.5 * Math.cos(tip.a + s.bend * 0.35), my = G.cy + tip.r * 0.5 * Math.sin(tip.a + s.bend * 0.35);
-    ctx.strokeStyle = rgb(col, fade * 0.2);
-    ctx.lineWidth = 0.8;
-    ctx.beginPath(); ctx.moveTo(G.cx, G.cy); ctx.quadraticCurveTo(mx, my, tip.x, tip.y); ctx.stroke();
-    // seed
-    const size = 1.1 + clamp(Math.log10(s.len + 10) / 4.6, 0, 1) * 1.9 + (tip.age < 1.5 ? (1.5 - tip.age) * 1.6 : 0);
-    ctx.fillStyle = rgb(col, fade * 0.95);
-    ctx.beginPath();
-    if (s.bot) { ctx.moveTo(tip.x, tip.y - size * 1.25); ctx.lineTo(tip.x + size * 1.25, tip.y); ctx.lineTo(tip.x, tip.y + size * 1.25); ctx.lineTo(tip.x - size * 1.25, tip.y); }
-    else ctx.arc(tip.x, tip.y, size, 0, TAU);
-    ctx.fill();
+function stepSpores(nowP, dt, pts, lines) {
+  for (let i = spores.length - 1; i >= 0; i--) {
+    const s = spores[i], q = sporePos(s, nowP), age = q[3];
+    if (age > SPORE_LIFE) { spores.splice(i, 1); continue; }
+    const fade = clamp(age / 0.6, 0, 1) * clamp((SPORE_LIFE - age) / 40, 0, 1);
+    const c = s.bot ? [0.59, 0.78, 1] : [1, 0.84, 0.59];
+    const flash = age < 1.5 ? (1.5 - age) * 0.03 : 0;
+    pts.push(q[0], q[1], q[2], c[0], c[1], c[2], fade * (s.bot ? 0.9 : 0.8), (s.bot ? 0.016 : 0.022) + s.big * 0.03 + flash, s.bot ? 2 : 0);
+    const stalk = fade * clamp(1 - age / 45, 0, 1) * 0.22;
+    if (stalk > 0.004) { lines.push(0, 0, 0, c[0], c[1], c[2], stalk * 0.3); lines.push(q[0], q[1], q[2], c[0], c[1], c[2], stalk); }
   }
-  corePulse = Math.max(0, corePulse - dt * 1.6);
-  if (live || seeds.length) {
-    const r = G.r0 * (0.07 + corePulse * 0.05);
-    const g = ctx.createRadialGradient(G.cx, G.cy, 0, G.cx, G.cy, r);
-    g.addColorStop(0, `rgba(255,236,200,${0.5 + corePulse * 0.4})`);
-    g.addColorStop(1, 'rgba(255,236,200,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(G.cx, G.cy, r, 0, TAU); ctx.fill();
-  }
+  heartPulse = Math.max(0, heartPulse - dt * 1.6);
+  if (isLive('written') || spores.length) pts.push(0, 0, 0, 1, 0.92, 0.78, 0.5 + heartPulse * 0.5, 0.22 + heartPulse * 0.14, 0);
 }
 
 // ───────────────────────────── whispers ─────────────────────────────
-// One quiet line of text at a time, each one a real event that just happened.
 const whisperEl = $('whisper');
 let whisperNext = null, whisperBusyUntil = 0;
 function offerWhisper(priority, make) {
@@ -441,11 +349,7 @@ function offerWhisper(priority, make) {
 }
 function tickWhisper(nowP) {
   if (nowP < whisperBusyUntil) return;
-  if (whisperEl.classList.contains('on')) {
-    whisperEl.classList.remove('on');
-    whisperBusyUntil = nowP + 1300;
-    return;
-  }
+  if (whisperEl.classList.contains('on')) { whisperEl.classList.remove('on'); whisperBusyUntil = nowP + 1300; return; }
   if (!whisperNext) return;
   whisperEl.textContent = whisperNext.make();
   whisperNext = null;
@@ -453,15 +357,16 @@ function tickWhisper(nowP) {
   whisperBusyUntil = nowP + 5200;
 }
 
-// ───────────────────────────── touch: ask what is there ─────────────────────────────
-const probeEl = $('probe');
-let probe = null, probeHide = 0;
+// ───────────────────────────── touch: turn it, enter it, ask it ─────────────────────────────
+const probeEl = $('probe'), markEl = $('mark');
+let probeHide = 0, marked = null;
 const fmtDeg = (v, pos, neg) => `${Math.abs(Math.round(v))}°${v >= 0 ? pos : neg}`;
 function ago(t) {
   const m = Math.max(0, Math.round((Date.now() - t) / 60000));
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h ${m % 60} min ago`;
 }
-function setProbe(x, y, title, sub, hx = x, hy = y) {
+function hideProbe() { probeEl.hidden = true; markEl.hidden = true; marked = null; }
+function setProbe(x, y, title, sub, world) {
   probeEl.replaceChildren();
   const b = document.createElement('b'); b.textContent = title; probeEl.append(b);
   if (sub) { const s = document.createElement('span'); s.textContent = sub; probeEl.append(s); }
@@ -470,72 +375,106 @@ function setProbe(x, y, title, sub, hx = x, hy = y) {
   const px = clamp(x - r.width / 2, 8, G.w - r.width - 8);
   const py = y - r.height - 22 < 8 ? y + 26 : y - r.height - 22;
   probeEl.style.transform = `translate(${Math.round(px)}px,${Math.round(py)}px)`;
-  probe = { x: hx, y: hy };
+  marked = world; // a function returning the thing's current world position, so the mark follows it
+  markEl.hidden = !world;
 }
 function ask(x, y, isTouch) {
   clearTimeout(probeHide);
-  probeHide = setTimeout(() => { probeEl.hidden = true; probe = null; }, isTouch ? 6000 : 3500);
-  const now = Date.now(), nowP = performance.now(), reach = isTouch ? 26 : 16;
+  probeHide = setTimeout(hideProbe, isTouch ? 7000 : 4000);
+  const now = Date.now(), reach = isTouch ? 28 : 16;
   let best = null, bestD = reach * reach;
-  const consider = (px, py, bias, make) => {
-    const d = (px - x) ** 2 + (py - y) ** 2 - bias;
-    if (d < bestD) { bestD = d; best = { px, py, make }; }
+  const consider = (world, bias, make) => {
+    const s = toScreen(world());
+    if (!s) return;
+    const d = (s[0] - x) ** 2 + (s[1] - y) ** 2 - bias;
+    if (d < bestD) { bestD = d; best = { world, make }; }
   };
+  const geo = (lon, lat, h, bias, make) => { const s = surface(lon, lat, h); if (facing(s)) consider(() => surface(lon, lat, h).p, bias, make); };
   const p = isLive('orbit') && issNow(now);
-  if (p) {
-    const [px, py] = project(p.lon, p.lat);
-    consider(px, py, 200, () => ['International Space Station', `people, ${Math.round(p.alt)} km up, moving at ${Math.round(p.vel).toLocaleString()} km/h — in ${p.vis === 'daylight' ? 'sunlight' : "the Earth's shadow"}`]);
+  if (p) geo(p.lon, p.lat, ISS_H, 250, () => ['International Space Station', `people, ${Math.round(p.alt)} km up, moving at ${Math.round(p.vel).toLocaleString()} km/h — in ${p.vis === 'daylight' ? 'sunlight' : "the Earth's shadow"}`]);
+  for (const q of quakes.values()) geo(q.lon, q.lat, 0.01, 30 + q.mag * 14, () => [`Earthquake · magnitude ${q.mag.toFixed(1)}`, `${q.place} — ${Math.round(q.depth)} km deep, ${ago(q.t)}`]);
+  for (const s of spores) consider(() => sporePos(s, performance.now()), 0, () => [`“${s.title}”`, `a page created on ${s.domain} by ${s.bot ? 'a bot' : 'a person'}, ${ago(s.t)}`]);
+  for (const o of life) {
+    if (o) geo(o.lon, o.lat, o.len, 0, () => [o.name || KIND_WORDS[o.kind] || 'something alive', `${KIND_WORDS[o.kind] || 'a living thing'}${o.latin && o.latin !== o.name ? ` (${o.latin})` : ''}, noticed${o.place ? ' in ' + o.place : ''} — shared ${ago(o.t)}`]);
   }
-  for (const q of quakes.values()) {
-    const [px, py] = project(q.lon, q.lat);
-    consider(px, py, 20 + q.mag * 12, () => [`Earthquake · magnitude ${q.mag.toFixed(1)}`, `${q.place} — ${Math.round(q.depth)} km deep, ${ago(q.t)}`]);
+  if (best) { const [t, s] = best.make(); setProbe(x, y, t, s, best.world); return; }
+  // Nothing in particular: where on the Earth is this patch of skin?
+  let spot = null, spotD = 30 * 30;
+  for (let lat = -85; lat <= 85; lat += 5) for (let lon = -180; lon < 180; lon += 5) {
+    const s = surface(lon, lat);
+    if (!facing(s)) continue;
+    const sc = toScreen(s.p);
+    if (!sc) continue;
+    const d = (sc[0] - x) ** 2 + (sc[1] - y) ** 2;
+    if (d < spotD) { spotD = d; spot = { lon, lat }; }
   }
-  const u = unproject(x, y);
-  if (u.r < G.r0 * 0.92) {
-    for (const s of seeds) {
-      const tip = seedTip(s, nowP);
-      consider(tip.x, tip.y, 0, () => [`“${s.title}”`, `a page created on ${s.domain} by ${s.bot ? 'a bot' : 'a person'}, ${ago(s.t)}`]);
-    }
-  } else if (u.r <= G.R + reach) {
-    for (let i = life.length - 1; i >= 0; i--) {
-      const o = life[i];
-      if (Math.abs(o.lat - u.lat) > 25) continue;
-      const [px, py] = project(o.lon, o.lat);
-      consider(px, py, 0, () => [o.name || KIND_WORDS[o.kind] || 'something alive', `${KIND_WORDS[o.kind] || 'a living thing'}${o.latin && o.latin !== o.name ? ` (${o.latin})` : ''}, noticed${o.place ? ' in ' + o.place : ''} — shared ${ago(o.t)}`]);
-    }
-  }
-  if (best) { const [t, s] = best.make(); setProbe(x, y, t, s, best.px, best.py); return; }
-  if (u.r >= G.r0 && u.r <= G.R) {
-    let sub = `it is ${solarHourWords(u.lon, G.sunLon)} there`;
-    if (wind && isLive('air')) { const [wu, wv] = windAt(u.lon, u.lat); sub += ` · wind ${Math.hypot(wu, wv).toFixed(0)} m/s`; }
-    setProbe(x, y, `${fmtDeg(u.lat, 'N', 'S')} ${fmtDeg(u.lon, 'E', 'W')}`, sub);
-  } else if (u.r < G.r0) {
-    setProbe(x, y, 'The written', seeds.length ? `${seeds.length} pages born in the last ${SEED_LIFE} seconds` : 'waiting for a page to be born');
-  } else { probeEl.hidden = true; probe = null; }
+  if (!spot) { hideProbe(); return; }
+  let sub = `it is ${solarHourWords(spot.lon, G.sunLon)} there`;
+  if (wind && isLive('air')) { const [wu, wv] = windAt(spot.lon, spot.lat); sub += ` · wind ${Math.hypot(wu, wv).toFixed(0)} m/s`; }
+  setProbe(x, y, `near ${fmtDeg(spot.lat, 'N', 'S')} ${fmtDeg(spot.lon, 'E', 'W')}`, sub, null);
 }
-canvas.addEventListener('pointerdown', (e) => ask(e.clientX, e.clientY, e.pointerType !== 'mouse'));
-canvas.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons || e.pressure > 0) ask(e.clientX, e.clientY, e.pointerType !== 'mouse'); });
+
+const pointers = new Map();
+let gesture = null;
+function holdCamera() { cam.auto = false; cam.idleAt = performance.now(); }
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 1) gesture = { x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false, pinch: 0 };
+  else if (pointers.size === 2 && gesture) { const [a, b] = [...pointers.values()]; gesture.pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); gesture.moved = true; }
+  stayAwake();
+});
+canvas.addEventListener('pointermove', (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) { if (e.pointerType === 'mouse') ask(e.clientX, e.clientY, false); return; }
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 2 && gesture) {
+    const [a, b] = [...pointers.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (gesture.pinch > 0 && d > 0) cam.dist = clamp((cam.dist * gesture.pinch) / d, 1.7, 12);
+    gesture.pinch = d;
+    holdCamera();
+  } else if (gesture) {
+    if (!gesture.moved && Math.hypot(e.clientX - gesture.x0, e.clientY - gesture.y0) > 7) gesture.moved = true;
+    if (gesture.moved) {
+      const k = 4.2 / Math.min(G.w, G.h);
+      cam.az += (e.clientX - prev[0]) * k;
+      cam.el = clamp(cam.el + (e.clientY - prev[1]) * k, -1.45, 1.45);
+      holdCamera();
+      hideProbe();
+    }
+  }
+});
+const endPointer = (e) => {
+  if (!pointers.delete(e.pointerId)) return;
+  if (pointers.size === 0 && gesture) {
+    if (!gesture.moved && e.type === 'pointerup' && performance.now() - gesture.t0 < 500) ask(e.clientX, e.clientY, e.pointerType !== 'mouse');
+    gesture = null;
+  } else if (gesture) gesture.pinch = 0;
+};
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.0012), 1.7, 12); holdCamera(); }, { passive: false });
 
 // ───────────────────────────── wiring the sources ─────────────────────────────
 const sources = createSources({
   quakes(list, initial) {
     for (const q of list) {
       const known = quakes.get(q.id);
-      if (known) { Object.assign(known, q, { color: depthColor(q.depth) }); continue; }
+      if (known) { Object.assign(known, q, { color: depthColor(q.depth), shock: known.shock }); continue; }
       q.color = depthColor(q.depth);
       q.shock = 0;
       quakes.set(q.id, q);
       if (!initial && Date.now() - q.t < HOUR) {
         q.shock = performance.now();
-        const [x] = project(q.lon, q.lat);
-        playQuake(q.mag, (x - G.cx) / G.R);
+        const s = toScreen(surface(q.lon, q.lat).p);
+        playQuake(q.mag, s ? clamp((s[0] / G.w) * 2 - 1, -1, 1) : 0);
         offerWhisper(q.mag >= 4 ? 3 : 2, () => `the ground moved — magnitude ${q.mag.toFixed(1)}, ${q.place}`);
       }
     }
   },
   life(list, initial) {
     list.sort((a, b) => a.t - b.t);
-    if (initial) { for (const o of list) addLife(o, true); life.sort((a, b) => a.t - b.t); return; }
+    if (initial) { for (const o of list) addLife(o, true); return; }
     // Replay the batch with its true rhythm, compressed only if it would outlast the next one.
     const now = Date.now(), t0 = list[0].t, span = Math.max(1, list[list.length - 1].t - t0), squeeze = Math.min(1, 38_000 / span);
     for (const o of list) lifePending.push({ o, due: now + (o.t - t0) * squeeze });
@@ -546,74 +485,143 @@ const sources = createSources({
     if (last && fix.t <= last.t) return;
     if (last && fix.t - last.t > 120_000) iss.length = 0; // a gap: don't draw a line through the unknown
     iss.push(fix);
-    if (iss.length > 60) iss.shift();
+    if (iss.length > 90) iss.shift();
   },
   solarWind(s) { solar = s; },
-  aurora(cells) { auroraCells = cells; paintAurora(); },
-  wind(w) { wind = w; },
-  page: addSeed,
+  aurora: paintAurora,
+  wind(w) { wind = w; furDirty = true; },
+  page: addSpore,
 });
 
 // ───────────────────────────── the frame ─────────────────────────────
-let last = performance.now(), lastSlow = 0;
+const geoPts = new Batch(gl, 24000), geoLines = new Batch(gl, 40000), worldPts = new Batch(gl, 1024), worldLines = new Batch(gl, 2048);
+const lineTo = (batch) => ({ push: (x, y, z, r, g, b, a) => batch.push(x, y, z, r, g, b, a, 1, 0) });
 const meridian = -new Date().getTimezoneOffset() / 4; // your clock's meridian, not your location
+let last = performance.now(), lastSlow = 0, slowSum = 0, slowN = 0, airWasLive = false;
+
+function common(p, t) {
+  gl.useProgram(p.p);
+  gl.uniformMatrix4fv(p.u.uVP, false, cam.vp);
+  gl.uniform1f(p.u.uSun, G.sunLon * D);
+  gl.uniform1f(p.u.uTime, t);
+  gl.uniform4fv(p.u.uRip, ripPos);
+  gl.uniform1fv(p.u.uRipAmp, ripAmp);
+}
+function drawBatch(batch, mode, geoFlag, shim = 0) {
+  if (!batch.n) return;
+  const p = prog.pts;
+  gl.uniform1f(p.u.uGeo, geoFlag);
+  gl.uniform1f(p.u.uLine, mode === gl.LINES ? 1 : 0);
+  gl.uniform1f(p.u.uShim, shim);
+  bindLayout(gl, p, batch.buf, PTS_LAYOUT);
+  gl.drawArrays(mode, 0, batch.n);
+}
 
 function frame(nowP) {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (nowP - last) / 1000);
+  const rawDt = nowP - last;
+  const dt = Math.min(0.05, rawDt / 1000);
   last = nowP;
-  const now = Date.now(), t = nowP / 1000;
+  // Self-care: if frames are slow for a sustained stretch, draw fewer pixels rather than stutter.
+  if (rawDt < 1000) { slowSum += rawDt; slowN++; }
+  if (slowN >= 120) {
+    if (slowSum / slowN > 36 && maxDpr > 1 && (window.devicePixelRatio || 1) > 1) { maxDpr = maxDpr > 1.5 ? 1.5 : 1; resize(); }
+    slowSum = slowN = 0;
+  }
+  const now = Date.now(), t = secs(now);
 
   if (nowP - lastSlow > 1000) {
     lastSlow = nowP;
     const s = subsolar(now);
     G.sunLon = s.lon; G.sunLat = s.lat;
-    paintDaylight();
-    if (Math.floor(now / 120000) !== paintLife.stamp) { paintLife.stamp = Math.floor(now / 120000); paintLife(); }
+    const air = !!wind && isLive('air');
+    if (air !== airWasLive) { airWasLive = air; furDirty = true; }
     if ($('about').open) updateAbout();
   }
+  if (furDirty) refreshFur();
   releaseLife();
   tickWhisper(nowP);
+  updateCamera(dt, nowP / 1000);
 
-  ctx.setTransform(G.dpr, 0, 0, G.dpr, 0, 0);
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = '#04050a';
-  ctx.fillRect(0, 0, G.w, G.h);
+  // gather everything that moves
+  geoPts.reset(); geoLines.reset(); worldPts.reset(); worldLines.reset();
+  stepWind(dt, geoPts, geoLines);
+  stepQuakes(now, nowP, geoPts);
+  for (let i = blooms.length - 1; i >= 0; i--) {
+    const b = blooms[i], age = (nowP - b.born) / 1000;
+    if (age > 5) { blooms.splice(i, 1); continue; }
+    const c = kindColor(b.o.kind), k = age / 5;
+    geoPts.push(b.o.lon * D, b.o.lat * D, b.o.len, c[0] / 255, c[1] / 255, c[2] / 255, (1 - k) * 0.8, 0.02 + (1 - (1 - k) ** 3) * 0.14, 1);
+  }
+  if (isLive('orbit')) {
+    const p = issNow(now);
+    if (p) {
+      geoPts.push(p.lon * D, p.lat * D, ISS_H, 0.82, 0.94, 1, 0.55, 0.16, 0);
+      geoPts.push(p.lon * D, p.lat * D, ISS_H, 1, 1, 1, 1, 0.035, 0);
+      for (let i = 1; i < iss.length; i++) {
+        if (Math.abs(iss[i].lon - iss[i - 1].lon) > 180) continue; // don't draw across the date-line seam
+        geoLines.push(iss[i - 1].lon * D, iss[i - 1].lat * D, ISS_H, 0.82, 0.94, 1, ((i - 1) / iss.length) * 0.6, 1, 0);
+        geoLines.push(iss[i].lon * D, iss[i].lat * D, ISS_H, 0.82, 0.94, 1, (i / iss.length) * 0.6, 1, 0);
+      }
+    }
+  }
+  for (let lat = -84; lat < 84; lat += 6) { // your meridian: a faint band around the body
+    geoLines.push(meridian * D, lat * D, 0.004, 0.91, 0.89, 0.85, 0.2, 1, 0);
+    geoLines.push(meridian * D, (lat + 6) * D, 0.004, 0.91, 0.89, 0.85, 0.2, 1, 0);
+  }
+  stepDust(dt, lineTo(worldLines));
+  stepSpores(nowP, dt, worldPts, lineTo(worldLines));
+  // the Sun itself, far off along its true direction
+  worldPts.push(Math.cos(G.sunLat * D) * 40, Math.sin(G.sunLat * D) * 40, 0, 1, 0.86, 0.6, 0.9, 9, 0);
+  for (const b of [geoPts, geoLines, worldPts, worldLines]) b.upload();
 
-  // the Sun's side of the sky
-  const sg = ctx.createRadialGradient(G.cx, G.cy - G.R * 2.1, 0, G.cx, G.cy - G.R * 2.1, G.R * 1.9);
-  sg.addColorStop(0, 'rgba(255,214,150,0.16)');
-  sg.addColorStop(1, 'rgba(255,214,150,0)');
-  ctx.fillStyle = sg;
-  ctx.fillRect(0, 0, G.w, G.h);
+  // draw
+  gl.clearColor(0.016, 0.02, 0.039, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  common(prog.body, t);
+  gl.uniform1f(prog.body.u.uDecl, G.sunLat * D);
+  gl.uniform3fv(prog.body.u.uEye, cam.eye);
+  bindLayout(gl, prog.body, body.vb, [['aLL', 2]]);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, body.ib);
+  gl.drawElements(gl.TRIANGLES, body.n, gl.UNSIGNED_SHORT, 0);
 
-  drawDust(dt);
-  if (dayTex.width > 1) ctx.drawImage(dayTex, G.cx - G.R * 1.04, G.cy - G.R * 1.04, G.R * 2.08, G.R * 2.08);
-  ctx.globalCompositeOperation = 'lighter';
-  drawWind(dt);
-  ctx.globalCompositeOperation = 'source-over';
-  drawAurora(t);
-  if (isLive('life') || life.length) { ctx.globalCompositeOperation = 'lighter'; drawGeo(lifeLayer, 1); }
-  drawBlooms(nowP);
-  ctx.globalCompositeOperation = 'source-over';
-  drawQuakes(now, nowP);
-  drawISS(now);
-  drawSeeds(nowP, dt);
+  // everything else is light: added on top, hidden by the body but never hiding each other
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
 
-  // your meridian
-  const ma = angOf(meridian);
-  ctx.strokeStyle = 'rgba(233,228,216,0.55)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(G.cx + (G.R + 4) * Math.cos(ma), G.cy + (G.R + 4) * Math.sin(ma));
-  ctx.lineTo(G.cx + (G.R + 10) * Math.cos(ma), G.cy + (G.R + 10) * Math.sin(ma));
-  ctx.stroke();
+  if (lifeCount) {
+    const p = prog.fur;
+    common(p, t);
+    gl.uniform1f(p.u.uPx, cam.px);
+    gl.uniform1f(p.u.uMaxPt, MAX_PT);
+    gl.uniform1f(p.u.uTip, 0);
+    bindLayout(gl, p, furBuf, FUR_LAYOUT);
+    gl.drawArrays(gl.LINES, 0, lifeCount * FUR_VERTS);
+    gl.uniform1f(p.u.uTip, 1);
+    bindLayout(gl, p, tipBuf, FUR_LAYOUT);
+    gl.drawArrays(gl.POINTS, 0, lifeCount);
+  }
 
-  if (probe) {
-    ctx.strokeStyle = 'rgba(233,228,216,0.7)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(probe.x, probe.y, 9, 0, TAU); ctx.stroke();
+  common(prog.pts, t);
+  gl.uniform1f(prog.pts.u.uPx, cam.px);
+  gl.uniform1f(prog.pts.u.uMaxPt, MAX_PT);
+  if (auroraLive && isLive('aurora')) {
+    auroraBatch.n = auroraN;
+    // the curtains ripple faster when the solar wind blows harder
+    drawBatch(auroraBatch, gl.POINTS, 1, solar ? (solar.speed / 450) * 1.1 : 1.1);
+  }
+  drawBatch(geoPts, gl.POINTS, 1);
+  drawBatch(geoLines, gl.LINES, 1);
+  drawBatch(worldLines, gl.LINES, 0);
+  drawBatch(worldPts, gl.POINTS, 0);
+
+  if (marked) {
+    const s = toScreen(marked());
+    if (s) markEl.style.transform = `translate(${Math.round(s[0])}px,${Math.round(s[1])}px)`;
   }
 }
 
@@ -623,13 +631,15 @@ function updateAbout() {
   let big = null, hourCount = 0;
   for (const q of quakes.values()) { if (!big || q.mag > big.mag) big = q; if (now - q.t < HOUR) hourCount++; }
   const p = issNow(now);
+  let oldest = now;
+  for (const o of life) if (o && o.t < oldest) oldest = o.t;
   const lines = {
     ground: quakes.size ? `${quakes.size} in the past day, ${hourCount} in the past hour. Strongest: magnitude ${big.mag.toFixed(1)}, ${big.place}.` : '',
     air: wind ? `Read ${ago(wind.at)}; refreshed every two hours.` : '',
-    life: life.length ? `${life.length.toLocaleString()} sightings on the ring, the oldest shared ${ago(life[0].t)}.` : '',
-    written: seeds.length ? `${seeds.length} pages born in the last ${SEED_LIFE} seconds, ${seeds.filter((s) => s.bot).length} of them by bots.` : '',
+    life: lifeCount ? `${lifeCount.toLocaleString()} hairs on the body, the oldest shared ${ago(oldest)}.` : '',
+    written: spores.length ? `${spores.length} pages born in the last ${SPORE_LIFE} seconds, ${spores.filter((s) => s.bot).length} of them by bots.` : '',
     orbit: p ? `Now over ${fmtDeg(p.lat, 'N', 'S')} ${fmtDeg(p.lon, 'E', 'W')}, ${Math.round(p.alt)} km up.` : '',
-    sun: solar ? `Solar wind ${Math.round(solar.speed)} km/s${solar.bz == null ? '' : `, magnetic field ${solar.bz < 0 ? 'tilted south (aurora-friendly)' : 'tilted north'}`}.${auroraCells && isLive('aurora') ? ` Aurora peaks at ${auroraPeak}% likelihood.` : ''}` : '',
+    sun: solar ? `Solar wind ${Math.round(solar.speed)} km/s${solar.bz == null ? '' : `, magnetic field ${solar.bz < 0 ? 'tilted south (aurora-friendly)' : 'tilted north'}`}.${auroraLive && isLive('aurora') ? ` Aurora peaks at ${auroraPeak}% likelihood.` : ''}` : '',
   };
   for (const li of document.querySelectorAll('#layers li')) {
     const k = li.dataset.src, live = isLive(k);
@@ -653,10 +663,19 @@ soundBtn.addEventListener('click', async () => {
 // ───────────────────────────── go ─────────────────────────────
 { const s = subsolar(Date.now()); G.sunLon = s.lon; G.sunLat = s.lat; }
 resize();
-paintDaylight();
 let resizeTimer = 0;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 120); });
 // Listen only while someone is looking: kind to batteries, data plans and the sources.
-document.addEventListener('visibilitychange', () => (document.hidden ? sources.stop() : sources.start()));
+// And keep the screen awake while it is being watched (released automatically when hidden).
+let wake = null;
+async function stayAwake() {
+  if (!('wakeLock' in navigator) || wake || document.hidden) return;
+  try { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } catch { /* denied or unsupported: fine */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { sources.stop(); slowSum = slowN = 0; }
+  else { sources.start(); last = performance.now(); stayAwake(); }
+});
+stayAwake();
 if (!document.hidden) sources.start();
 requestAnimationFrame(frame);

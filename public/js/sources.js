@@ -97,9 +97,9 @@ export function createSources(on) {
   all.push(poller('life', 40_000, async () => {
     if (!seeded) {
       // First breath: the most recent uploads, then a few pages further back so
-      // the continents have something to stand on. ~10 minutes of the world.
+      // the continents have something to stand on. ~10–15 minutes of the world.
       let below = 0;
-      for (let page = 0; page < 5; page++) {
+      for (let page = 0; page < 10; page++) {
         const j = await getJSON(INAT + '&order=desc' + (below ? '&id_below=' + below : ''));
         const obs = (j.results || []).map(parseObs).filter(Boolean);
         if (!obs.length) break;

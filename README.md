@@ -1,26 +1,28 @@
 # ouroboros
 
-A living ring fed by the real world, right now.
+A living creature fed by the real world, right now.
 
-The ring is the whole Earth seen from above the north pole and opened out:
-the inner edge is the Arctic, the outer edge is Antarctica, and the angle is
-longitude. The Sun is always at the top, so the planet turns beneath it — one
-slow lap a day. Day chases night around the ring and never catches it.
+Its skin is the whole Earth, bent into a ring and floating in open space. The
+outer rim is the equator, its back is the northern hemisphere, its belly the
+southern, and both poles meet in its throat. The Sun is where the Sun really
+is, so the planet turns beneath it — one slow lap a day. Day chases night
+around the body and never catches it.
 
-Six things that have nothing to do with each other share that one body:
+Everything that moves on it moves because something real just happened:
 
 | What you see | What it is | Source | Terms |
 |---|---|---|---|
-| **Embers** | Every earthquake of the past 24 h. Size = magnitude, colour = depth. New ones arrive with a shockwave. | [USGS GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php) | Public domain. Polled once a minute (the feed's own cadence). |
-| **Drifting threads** | Wind at 10 m on a 144-point global grid. | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0; free for non-commercial use under 10,000 calls/day. One 144-point call every 2 h per visitor, cached in `localStorage`. |
-| **Coloured motes** | A plant, bird, insect, fungus… that someone just noticed and shared. Colour = kingdom/class. Over time the continents draw themselves out of attention alone. | [iNaturalist API v2](https://api.inaturalist.org/v2/docs/) | Free; they ask for ≤ 60 req/min and ≤ 10,000/day. One request every 40 s per visitor. |
-| **The seed-head at the centre** | Each stalk is a page being created on a Wikimedia project this second. Each wiki grows in its own direction; longer pages reach further. Gold = written by a person, blue diamond = by a bot. | [Wikimedia EventStreams](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service) (`mediawiki.page-create`) | Public stream, no key. |
+| **Fur** | Every hair is a plant, bird, insect, fungus… that someone just noticed and shared, growing where it was seen. Colour = kingdom/class. Over time the continents grow in, out of attention alone. | [iNaturalist API v2](https://api.inaturalist.org/v2/docs/) | Free; they ask for ≤ 60 req/min and ≤ 10,000/day. Ten requests at load, then one every 40 s per visitor. |
+| **Sway and drifting threads** | The fur leans and sways with the real 10 m wind at that spot (144-point global grid); pale threads drift where the air is going. | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0; free for non-commercial use under 10,000 calls/day. One 144-point call every 2 h per visitor, cached in `localStorage`. |
+| **Embers and shivers** | Every earthquake of the past 24 h. Size = magnitude, colour = depth. A new one sends a ripple through the body's actual geometry; the last half hour still trembles. | [USGS GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php) | Public domain. Polled once a minute (the feed's own cadence). |
+| **Breath** | Each spore leaving the throat is a page being created on a Wikimedia project this second. Each wiki breathes out in its own direction; longer pages drift further. Gold = written by a person, blue diamond = by a bot. | [Wikimedia EventStreams](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service) (`mediawiki.page-create`) | Public stream, no key. |
 | **The white traveller** | The International Space Station and its crew. | [wheretheiss.at](https://wheretheiss.at/w/developer) | Free, ~1 req/s limit. Polled every 10 s. |
-| **Falling dust & glowing edges** | Solar-wind speed (the dust falls at the true speed, to the scale of the planet) and NOAA's OVATION aurora model (the green fire at the poles). | [NOAA SWPC](https://services.swpc.noaa.gov/) | Public domain. |
+| **Dust and the glowing throat** | Solar-wind speed (the dust crosses the space at the true speed, to the scale of the body) and NOAA's OVATION aurora model (the green fire where the poles meet). | [NOAA SWPC](https://services.swpc.noaa.gov/) | Public domain. |
 
-Touch the ring to ask what is there. The speaker button turns on sound; every
-note is an event (a pluck for a living thing, a tick for a page, a low drop
-for an earthquake).
+Drag to circle it, pinch or scroll to come close, tap anything to ask what it
+is. Left alone, the view drifts slowly around it. The speaker button turns on
+sound; every note is an event (a pluck for a living thing, a tick for a page,
+a low drop for an earthquake).
 
 ## Honesty
 
@@ -31,15 +33,18 @@ for an earthquake).
   talks straight to the sources, so there is nowhere for a fake to hide.
 - **The layers share a canvas, not a cause.** Nothing is drawn *between*
   sources. Any pattern across them is for the viewer to wonder about.
-- **What is artistic licence:** the ring projection, the colours, the sounds;
-  the wind's *speed* (direction and relative strength are real, the pace is
-  exaggerated so it can be seen); and which wiki grows in which direction (a
+- **What is artistic licence:** the shape of the body, its scales, the colours,
+  the sounds, and the drifting camera (that is the viewer moving, not the
+  data); each hair's length; the wind's *pace* (direction and relative strength
+  are real, the speed is exaggerated so it can be seen, and a hair with no wind
+  data does not move at all); the size of a quake's ripple (scaled from its
+  magnitude, not its physics); and which wiki breathes in which direction (a
   fixed hash of its name — a language has no longitude).
 - **Small delays, stated:** living things arrive about a minute behind (they
   are fetched in batches and replayed with their true rhythm); the ISS coasts
   on its last measured velocity between fixes; the aurora is NOAA's 30–90
   minute forecast model, not a photograph.
-- The notch on the outer edge is "roughly your meridian", guessed from your
+- The faint band around the body is "roughly your meridian", guessed from your
   clock's timezone. No location is requested; nothing about visitors is
   collected, stored or sent.
 - Page titles and place names are shown exactly as the world wrote them, so
@@ -47,7 +52,8 @@ for an earthquake).
 
 ## Running it
 
-It is a folder of static files: no build step, no dependencies, no keys.
+It is a folder of static files: no build step, no dependencies, no keys. It
+needs WebGL (every current browser has it).
 
 ```sh
 npx serve public        # or: python3 -m http.server -d public
@@ -83,12 +89,17 @@ About 12 MB per hour of watching, most of it the page-birth stream. All
 listening stops while the tab is hidden. (The full Wikipedia *edit* stream
 would have been livelier but runs ~180 MB/h — not something to do to a phone.)
 
+The screen is kept awake while the page is visible (Wake Lock, where the
+browser supports it). If a device can't hold a steady frame rate the canvas
+quietly drops its pixel density rather than stutter.
+
 ## Layout
 
 ```
 public/
   index.html, style.css      the page and the "what am I looking at" panel
-  js/main.js                 the creature: projection, layers, touch, whispers
+  js/main.js                 the creature: world, layers, camera, touch, whispers
+  js/gl.js                   WebGL helpers and the three shaders (body, fur, light)
   js/sources.js              the six listeners (polling, backoff, pause/resume)
   js/astro.js                where the Sun is, from the clock
   js/audio.js                event-driven sound

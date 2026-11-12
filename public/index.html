@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ouroboros</title>
-<meta name="description" content="A living ring fed by the real world, right now: earthquakes, wind, living things being noticed, pages being written, people in orbit, and the breath of the Sun.">
+<meta name="description" content="A living creature fed by the real world, right now: earthquakes, wind, living things being noticed, pages being written, people in orbit, and the breath of the Sun.">
 <meta name="theme-color" content="#04050a">
 <meta name="color-scheme" content="dark">
 <meta name="mobile-web-app-capable" content="yes">
@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<canvas id="c" role="img" aria-label="A glowing ring: the whole Earth seen from above the north pole, with the Sun at the top. Live earthquakes, winds, wildlife sightings, the space station and aurora move across it; newly written pages bloom at its centre."></canvas>
+<canvas id="c" role="img" aria-label="A ring-shaped creature floating in space, whose skin is the whole Earth. It grows fur where living things are noticed, the fur sways in the real wind, earthquakes ripple through its body, and newly written pages drift out of its throat."></canvas>
 
 <div id="intro" aria-hidden="true">
   <h1>ouroboros</h1>
@@ -24,6 +24,8 @@
 
 <p id="whisper"></p>
 <p id="probe" hidden></p>
+<div id="mark" hidden></div>
+<p id="nogl" hidden>ouroboros needs WebGL, which this browser has switched off.</p>
 
 <nav id="controls">
   <button id="sound" type="button" aria-pressed="false" aria-label="Sound" title="Sound">
@@ -35,19 +37,20 @@
 <dialog id="about" aria-labelledby="about-title">
   <form method="dialog"><button id="about-close" aria-label="Close">×</button></form>
   <h2 id="about-title">What you are looking at</h2>
-  <p class="lede">The ring is the whole Earth, seen from above the north pole and opened out: the inner edge is the Arctic, the outer edge is Antarctica. The Sun is always at the top, so the planet turns beneath it — one slow lap a day. Day chases night around the ring and never catches it.</p>
-  <p class="lede">Nothing on it is simulated. Your browser is listening directly to six public sources. When one falls silent, that part of the creature simply goes dark.</p>
+  <p class="lede">A creature whose skin is the whole Earth, bent into a ring. Its outer rim is the equator, its back is the northern hemisphere, its belly the southern, and both poles meet in its throat. The Sun is where the Sun really is, so the planet turns beneath it — one slow lap a day. Day chases night around the body and never catches it.</p>
+  <p class="lede">Nothing here is simulated. Everything that moves, moves because something real just happened. Your browser is listening directly to six public sources; when one falls silent, that part of the creature goes still.</p>
+  <p class="lede">Drag to circle it. Pinch or scroll to come close. Tap anything to ask what it is.</p>
 
   <ul id="layers">
-    <li data-src="ground"><i></i><div><b>Embers — the ground</b><span>Every earthquake of the past day, where it struck. Size is magnitude; colour is depth (amber shallow, violet deep). New ones arrive with a shockwave.</span><em></em><small>U.S. Geological Survey · public domain</small></div></li>
-    <li data-src="air"><i></i><div><b>Drifting threads — the air</b><span>Wind near the surface, right now, on a coarse global grid. Direction and relative strength are real; the speed is exaggerated so you can see it.</span><em></em><small>Open-Meteo · CC BY 4.0</small></div></li>
-    <li data-src="life"><i></i><div><b>Coloured motes — the living</b><span>A plant, bird, insect or fungus that somebody just noticed and shared. They arrive about a minute behind the world. Watch long enough and the continents draw themselves, out of attention alone.</span><em></em><small>iNaturalist community · api.inaturalist.org</small></div></li>
-    <li data-src="written"><i></i><div><b>The seed-head at the centre — the written</b><span>Each stalk is a page being born on Wikipedia or a sister project, this second. Each language grows in its own direction; longer pages reach further. Gold seeds were written by people, blue diamonds by bots.</span><em></em><small>Wikimedia EventStreams</small></div></li>
-    <li data-src="orbit"><i></i><div><b>The white traveller — people in orbit</b><span>The International Space Station, with its crew aboard, lapping the ring every ninety-two minutes.</span><em></em><small>wheretheiss.at</small></div></li>
-    <li data-src="sun"><i></i><div><b>Falling dust &amp; glowing edges — the Sun</b><span>The specks drift at the measured speed of the solar wind, true to the scale of the planet. The green fire on the ring's edges is the aurora, where NOAA's model says it is burning right now.</span><em></em><small>NOAA Space Weather Prediction Center · public domain</small></div></li>
+    <li data-src="life"><i></i><div><b>Fur — the living</b><span>Every hair is a plant, bird, insect or fungus that somebody just noticed and shared, growing where it was seen. Colour is its kind. They arrive about a minute behind the world. Watch long enough and the continents grow in, out of attention alone.</span><em></em><small>iNaturalist community · api.inaturalist.org</small></div></li>
+    <li data-src="air"><i></i><div><b>Sway and drifting threads — the air</b><span>The fur leans and sways with the real wind at that spot, and pale threads drift where the air is going. Direction and relative strength are real; the pace is exaggerated so you can see it.</span><em></em><small>Open-Meteo · CC BY 4.0</small></div></li>
+    <li data-src="ground"><i></i><div><b>Embers and shivers — the ground</b><span>Every earthquake of the past day glows where it struck: size is magnitude, colour is depth (amber shallow, violet deep). A new one sends a real ripple through the body, and the last half hour still trembles.</span><em></em><small>U.S. Geological Survey · public domain</small></div></li>
+    <li data-src="written"><i></i><div><b>Breath — the written</b><span>Each spore leaving the throat is a page being born on Wikipedia or a sister project, this second. Each language breathes out in its own direction; longer pages drift further. Gold was written by a person, blue diamonds by bots.</span><em></em><small>Wikimedia EventStreams</small></div></li>
+    <li data-src="orbit"><i></i><div><b>The white traveller — people in orbit</b><span>The International Space Station, with its crew aboard, circling the body every ninety-two minutes.</span><em></em><small>wheretheiss.at</small></div></li>
+    <li data-src="sun"><i></i><div><b>Dust and the glowing throat — the Sun</b><span>The dust crosses the space at the measured speed of the solar wind, true to the scale of the body. The green fire in the throat is the aurora, where NOAA's model says it is burning right now.</span><em></em><small>NOAA Space Weather Prediction Center · public domain</small></div></li>
   </ul>
 
-  <p class="fine">Touch the ring to ask what is there. The small notch on the outer edge is roughly your own meridian, guessed from your clock's timezone — nothing about you is collected or sent anywhere. The layers share a canvas, not a cause: any pattern you see between them is yours to wonder about.</p>
+  <p class="fine">The faint band around the body is roughly your own meridian, guessed from your clock's timezone — nothing about you is collected or sent anywhere. The layers share a body, not a cause: any pattern you see between them is yours to wonder about.</p>
   <p class="fine"><a href="https://github.com/yushirm/ouroboros" rel="noopener">Source &amp; notes</a></p>
 </dialog>
 
