@@ -26,7 +26,7 @@ a low drop for an earthquake).
 
 ## Honesty
 
-- **Nothing is simulated.** There is no fallback data and no filler animation.
+- **Nothing is simulated.** There is no invented data and no filler animation.
   If a source goes quiet, its layer goes dark until it comes back. The `?`
   panel shows which sources are live and what they are saying.
 - **Nothing sits in the middle.** There is no backend. Each visitor's browser
