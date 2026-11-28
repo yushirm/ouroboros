@@ -365,12 +365,16 @@ function ago(t) {
   const m = Math.max(0, Math.round((Date.now() - t) / 60000));
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h ${m % 60} min ago`;
 }
-function hideProbe() { probeEl.hidden = true; markEl.hidden = true; marked = null; probeHref = ''; }
+function hideProbe() { probeEl.hidden = true; markEl.hidden = true; marked = null; probeHref = ''; canvas.style.cursor = ''; }
+// With a link the whole card is a real <a>, so it can be tapped, tabbed to, or opened from the context menu.
 function setProbe(x, y, title, sub, world, href = '', hint = '') {
   probeEl.replaceChildren();
-  const b = document.createElement('b'); b.textContent = title; probeEl.append(b);
-  if (sub) { const s = document.createElement('span'); s.textContent = sub; probeEl.append(s); }
-  if (href) { const h = document.createElement('span'); h.textContent = hint; probeEl.append(h); }
+  let box = probeEl;
+  if (href) { box = document.createElement('a'); box.href = href; box.target = '_blank'; box.rel = 'noopener'; probeEl.append(box); }
+  const b = document.createElement('b'); b.textContent = title; box.append(b);
+  if (sub) { const s = document.createElement('span'); s.textContent = sub; box.append(s); }
+  if (href) { const h = document.createElement('span'); h.className = 'go'; h.textContent = hint; box.append(h); }
+  probeEl.classList.toggle('link', !!href);
   probeHref = href;
   probeEl.hidden = false;
   const r = probeEl.getBoundingClientRect();
@@ -403,9 +407,12 @@ function ask(x, y, isTouch, tap = false) {
     const [t, s, href] = best.make();
     // A second tap (or a click while hovering) on an event whose card is already showing opens its source.
     if (tap && href && probeHref === href && !probeEl.hidden) { window.open(href, '_blank', 'noopener'); return; }
-    setProbe(x, y, t, s, best.world, href, isTouch ? 'tap again to open ↗' : 'click to open ↗');
+    if (!isTouch) canvas.style.cursor = href ? 'pointer' : '';
+    if (href) { clearTimeout(probeHide); probeHide = setTimeout(hideProbe, isTouch ? 10000 : 4000); }
+    setProbe(x, y, t, s, best.world, href, `open on ${new URL(href).hostname.replace(/^www\./, '')} ↗`);
     return;
   }
+  canvas.style.cursor = '';
   // Nothing in particular: where on the Earth is this patch of skin?
   let spot = null, spotD = 30 * 30;
   for (let lat = -85; lat <= 85; lat += 5) for (let lon = -180; lon < 180; lon += 5) {
@@ -421,6 +428,19 @@ function ask(x, y, isTouch, tap = false) {
   if (wind && isLive('air')) { const [wu, wv] = windAt(spot.lon, spot.lat); sub += ` · wind ${Math.hypot(wu, wv).toFixed(0)} m/s`; }
   setProbe(x, y, `near ${fmtDeg(spot.lat, 'N', 'S')} ${fmtDeg(spot.lon, 'E', 'W')}`, sub, null);
 }
+
+// Hovering or focusing the card holds it open; Esc closes it.
+probeEl.addEventListener('pointerenter', () => clearTimeout(probeHide));
+probeEl.addEventListener('pointerleave', () => { clearTimeout(probeHide); probeHide = setTimeout(hideProbe, 2500); });
+probeEl.addEventListener('focusin', () => clearTimeout(probeHide));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideProbe(); });
+// Once per visitor, say that the dots can be asked.
+try {
+  if (!localStorage.getItem('ouroboros.hint.v1')) setTimeout(() => {
+    offerWhisper(9, () => 'tap a quake, a sighting or a page to see where it came from');
+    try { localStorage.setItem('ouroboros.hint.v1', '1'); } catch { /* fine */ }
+  }, 25_000);
+} catch { /* storage unavailable: no hint */ }
 
 const pointers = new Map();
 let gesture = null;
