@@ -208,7 +208,7 @@ export function createSources(on) {
         wiki: j.database, domain: (j.meta && j.meta.domain) || j.database,
         title: j.page_title.replace(/_/g, ' '), ns: j.page_namespace | 0,
         len: Number(j.rev_len) || 0, bot: !!(j.performer && j.performer.user_is_bot),
-        t: Date.now(),
+        t: Date.now(), url: j.meta && /^https:\/\//.test(j.meta.uri) ? j.meta.uri : '',
       });
     };
     es.onerror = () => mark('written', 20_000, 'stream interrupted');
