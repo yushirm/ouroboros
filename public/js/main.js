@@ -359,17 +359,19 @@ function tickWhisper(nowP) {
 
 // ───────────────────────────── touch: turn it, enter it, ask it ─────────────────────────────
 const probeEl = $('probe'), markEl = $('mark');
-let probeHide = 0, marked = null;
+let probeHide = 0, marked = null, probeHref = '';
 const fmtDeg = (v, pos, neg) => `${Math.abs(Math.round(v))}°${v >= 0 ? pos : neg}`;
 function ago(t) {
   const m = Math.max(0, Math.round((Date.now() - t) / 60000));
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h ${m % 60} min ago`;
 }
-function hideProbe() { probeEl.hidden = true; markEl.hidden = true; marked = null; }
-function setProbe(x, y, title, sub, world) {
+function hideProbe() { probeEl.hidden = true; markEl.hidden = true; marked = null; probeHref = ''; }
+function setProbe(x, y, title, sub, world, href = '', hint = '') {
   probeEl.replaceChildren();
   const b = document.createElement('b'); b.textContent = title; probeEl.append(b);
   if (sub) { const s = document.createElement('span'); s.textContent = sub; probeEl.append(s); }
+  if (href) { const h = document.createElement('span'); h.textContent = hint; probeEl.append(h); }
+  probeHref = href;
   probeEl.hidden = false;
   const r = probeEl.getBoundingClientRect();
   const px = clamp(x - r.width / 2, 8, G.w - r.width - 8);
@@ -378,7 +380,7 @@ function setProbe(x, y, title, sub, world) {
   marked = world; // a function returning the thing's current world position, so the mark follows it
   markEl.hidden = !world;
 }
-function ask(x, y, isTouch) {
+function ask(x, y, isTouch, tap = false) {
   clearTimeout(probeHide);
   probeHide = setTimeout(hideProbe, isTouch ? 7000 : 4000);
   const now = Date.now(), reach = isTouch ? 28 : 16;
@@ -392,12 +394,18 @@ function ask(x, y, isTouch) {
   const geo = (lon, lat, h, bias, make) => { const s = surface(lon, lat, h); if (facing(s)) consider(() => surface(lon, lat, h).p, bias, make); };
   const p = isLive('orbit') && issNow(now);
   if (p) geo(p.lon, p.lat, ISS_H, 250, () => ['International Space Station', `people, ${Math.round(p.alt)} km up, moving at ${Math.round(p.vel).toLocaleString()} km/h — in ${p.vis === 'daylight' ? 'sunlight' : "the Earth's shadow"}`]);
-  for (const q of quakes.values()) geo(q.lon, q.lat, 0.01, 30 + q.mag * 14, () => [`Earthquake · magnitude ${q.mag.toFixed(1)}`, `${q.place} — ${Math.round(q.depth)} km deep, ${ago(q.t)}`]);
-  for (const s of spores) consider(() => sporePos(s, performance.now()), 0, () => [`“${s.title}”`, `a page created on ${s.domain} by ${s.bot ? 'a bot' : 'a person'}, ${ago(s.t)}`]);
+  for (const q of quakes.values()) geo(q.lon, q.lat, 0.01, 30 + q.mag * 14, () => [`Earthquake · magnitude ${q.mag.toFixed(1)}`, `${q.place} — ${Math.round(q.depth)} km deep, ${ago(q.t)}`, `https://earthquake.usgs.gov/earthquakes/eventpage/${encodeURIComponent(q.id)}`]);
+  for (const s of spores) consider(() => sporePos(s, performance.now()), 0, () => [`“${s.title}”`, `a page created on ${s.domain} by ${s.bot ? 'a bot' : 'a person'}, ${ago(s.t)}`, s.url]);
   for (const o of life) {
-    if (o) geo(o.lon, o.lat, o.len, 0, () => [o.name || KIND_WORDS[o.kind] || 'something alive', `${KIND_WORDS[o.kind] || 'a living thing'}${o.latin && o.latin !== o.name ? ` (${o.latin})` : ''}, noticed${o.place ? ' in ' + o.place : ''} — shared ${ago(o.t)}`]);
+    if (o) geo(o.lon, o.lat, o.len, 0, () => [o.name || KIND_WORDS[o.kind] || 'something alive', `${KIND_WORDS[o.kind] || 'a living thing'}${o.latin && o.latin !== o.name ? ` (${o.latin})` : ''}, noticed${o.place ? ' in ' + o.place : ''} — shared ${ago(o.t)}`, `https://www.inaturalist.org/observations/${o.id}`]);
   }
-  if (best) { const [t, s] = best.make(); setProbe(x, y, t, s, best.world); return; }
+  if (best) {
+    const [t, s, href] = best.make();
+    // A second tap (or a click while hovering) on an event whose card is already showing opens its source.
+    if (tap && href && probeHref === href && !probeEl.hidden) { window.open(href, '_blank', 'noopener'); return; }
+    setProbe(x, y, t, s, best.world, href, isTouch ? 'tap again to open ↗' : 'click to open ↗');
+    return;
+  }
   // Nothing in particular: where on the Earth is this patch of skin?
   let spot = null, spotD = 30 * 30;
   for (let lat = -85; lat <= 85; lat += 5) for (let lon = -180; lon < 180; lon += 5) {
@@ -447,7 +455,7 @@ canvas.addEventListener('pointermove', (e) => {
 const endPointer = (e) => {
   if (!pointers.delete(e.pointerId)) return;
   if (pointers.size === 0 && gesture) {
-    if (!gesture.moved && e.type === 'pointerup' && performance.now() - gesture.t0 < 500) ask(e.clientX, e.clientY, e.pointerType !== 'mouse');
+    if (!gesture.moved && e.type === 'pointerup' && performance.now() - gesture.t0 < 500) ask(e.clientX, e.clientY, e.pointerType !== 'mouse', true);
     gesture = null;
   } else if (gesture) gesture.pinch = 0;
 };
